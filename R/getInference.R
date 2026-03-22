@@ -15,16 +15,34 @@ library(MASS)  # For mvrnorm
 
 #' Generate posterior samples using Laplacian approximation from MAP fit
 #'
-#' When only MAP estimation is available, this function generates approximate
-#' posterior samples. Since Stan's Hessian is in unconstrained space with different
-#' dimensions, we use a parametric bootstrap approach:
-#' 1. Extract MAP estimates for mu, beta, gamma
-#' 2. Add uncertainty based on estimated residual variance and parameter structure
+#' Generates approximate posterior samples from a MAP fit using a two-tier strategy:
+#'
+#' **Tier 1 (Hessian-based Laplace approximation):** When a Hessian matrix is provided
+#' and its inversion succeeds, the function constructs a standard Laplace approximation:
+#' a multivariate normal centered at the MAP estimate with covariance equal to the
+#' inverse of the negative Hessian. Sampling is performed on the unconstrained parameter
+#' scale (log for lower-bounded parameters, logit for unit-bounded parameters) and
+#' transformed back. A small ridge regularization (1e-6) is added for numerical
+#' stability, and eigenvalues are clamped at 1e-8 to ensure positive definiteness.
+#'
+#' **Tier 2 (Heuristic fallback):** When the Hessian is unavailable (\code{NULL}) or
+#' its inversion fails, the function falls back to a heuristic perturbation scheme:
+#' each parameter is perturbed independently with standard deviation proportional to
+#' \code{noise_scale} times the absolute MAP estimate (with small floors to prevent
+#' degenerate samples). This is a numerical safeguard, not a formal Laplace approximation.
+#'
+#' Note: When using \code{getModel()} with \code{fit_method = "map"} and
+#' \code{map_hessian = TRUE} (the default), the Hessian is computed automatically and
+#' Tier 1 is used. Setting \code{map_hessian = FALSE} bypasses Hessian computation
+#' and triggers the Tier 2 fallback.
 #'
 #' @param map_fit MAP optimization result from getModel (the $map element)
-#' @param hessian Hessian matrix at MAP estimate (optional, currently not used)
+#' @param hessian Hessian matrix at MAP estimate. When provided and invertible,
+#'   enables the standard Hessian-based Laplace approximation (Tier 1).
+#'   When \code{NULL} or inversion fails, the heuristic fallback (Tier 2) is used.
 #' @param n_samples Number of posterior samples to generate (default: 1000)
-#' @param noise_scale Scale factor for parameter perturbation (default: 0.1)
+#' @param noise_scale Scale factor for parameter perturbation in the heuristic
+#'   fallback (Tier 2 only). Default: 0.1. Ignored when Hessian-based Laplace succeeds.
 #' @param seed Random seed for reproducibility
 #' @return List with parameter samples in the same structure as rstan::extract()
 #' @export
@@ -279,297 +297,6 @@ getEta <- function(fit_result, H, X = NULL, offset = NULL, n_samples = 1000, see
 
 
 # =============================================================================
-# Chi-Squared Statistic (BQQ Approach)
-# =============================================================================
-
-#' Compute BQQ chi-squared statistic for quantile vectors
-#'
-#' Implements the chi-squared-inspired charting statistic from the BQQ methodology:
-#' W_t = Z_t' * S^{-1} * Z_t
-#' where Z_t = mean(Z_tr) across posterior draws r.
-#'
-#' The covariance S is estimated from the warm-up period to reflect the natural
-#' variability under the null hypothesis (no change point). This captures both:
-#' 1. Posterior uncertainty in parameter estimates
-#' 2. Natural temporal variability from the random walk component
-#'
-#' @param eta 3D array [iterations, quantiles, time] from getEta()
-#' @param w Warm-up period to exclude from testing and use for null calibration
-#' @param use_differencing If TRUE, use first-order differencing (for sustained shifts)
-#' @param df_method Method for degrees of freedom: "full" (m) or "reduced" (m-1)
-#' @param p_method Method for p-values: "chisq", "bootstrap", or "empirical_null"
-#' @param n_bootstrap Number of bootstrap replicates (if p_method = "bootstrap")
-#' @param alpha Significance level for multiple testing adjustment
-#' @param adjust_method P-value adjustment method (e.g., "holm", "BH", "bonferroni")
-#' @param signal_position Method to determine signal position within a run of consecutive signals:
-#'   - "first": First observation in the run (default)
-#'   - "last": Last observation in the run
-#'   - "middle": Middle observation in the run
-#'   - "max_deviation": Observation with maximum deviation from the predictive median (fitted eta at tau = 0.5)
-#' @param y Original data (required only for signal_position = "max_deviation")
-#' @param taus Quantile levels (required only for signal_position = "max_deviation")
-#' @return List with chi-squared statistics, p-values, and diagnostic info
-#' @export
-getChisq_BQQ <- function(eta, w = 0, use_differencing = FALSE,
-                         df_method = "reduced", p_method = "empirical_null",
-                         n_bootstrap = 1000, alpha = 0.05,
-                         adjust_method = "holm",
-                         signal_position = c("first", "last", "middle", "max_deviation"),
-                         y = NULL, taus = NULL) {
-
-  # Validate signal_position argument
-  signal_position <- match.arg(signal_position)
-
-  n_iter <- dim(eta)[1]
-  m <- dim(eta)[2]      # number of quantiles
-  n <- dim(eta)[3]      # number of time points
-
-  # Apply first-order differencing if requested
-  if (use_differencing) {
-    eta_diff <- array(NA, dim = c(n_iter, m, n - 1))
-    for (s in 1:n_iter) {
-      for (q in 1:m) {
-        eta_diff[s, q, ] <- diff(eta[s, q, ])
-      }
-    }
-    eta <- eta_diff
-    n <- n - 1
-    # Adjust warm-up for differencing
-    if (w > 0) w <- w - 1
-  }
-
-  # Degrees of freedom
-  df <- if (df_method == "reduced") m - 1 else m
-
-  # Compute Z_t (mean across posterior draws) for each time t
-  Z_t <- matrix(NA, m, n)
-  for (t in 1:n) {
-    Z_t[, t] <- colMeans(eta[, , t])
-  }
-
-  # Compute in-control reference from warm-up period
-  if (w > 0) {
-    Z_ref <- rowMeans(Z_t[, 1:w, drop = FALSE])
-
-    # Key improvement: Estimate the BETWEEN-TIME covariance from warm-up period
-    # This captures the natural temporal variability, not just posterior uncertainty
-    # S = Cov(Z_t) across time points in warm-up period
-    Z_warmup <- Z_t[, 1:w, drop = FALSE]  # m x w matrix
-    S_between <- cov(t(Z_warmup))  # Covariance across the w time points
-
-    # Also compute pooled within-time covariance (posterior uncertainty)
-    S_within <- matrix(0, m, m)
-    for (t in 1:w) {
-      S_within <- S_within + cov(eta[, , t])
-    }
-    S_within <- S_within / w
-
-    # Total covariance: between-time variability + posterior uncertainty
-    # Use between-time as primary (captures random walk), add small posterior uncertainty
-    S_ref <- S_between + 0.1 * S_within
-
-  } else {
-    # Fallback: use overall statistics
-    Z_ref <- rowMeans(Z_t)
-    S_ref <- cov(t(Z_t))
-  }
-
-  # Add ridge for numerical stability
-  S_ref_ridge <- S_ref + diag(1e-6, m)
-  S_ref_inv <- tryCatch({
-    solve(S_ref_ridge)
-  }, error = function(e) {
-    MASS::ginv(S_ref_ridge)
-  })
-
-  # Compute chi-squared statistic for each time point
-  chisq <- numeric(n)
-  for (t in 1:n) {
-    d <- Z_t[, t] - Z_ref
-    chisq[t] <- as.numeric(t(d) %*% S_ref_inv %*% d)
-  }
-
-  # P-values based on chosen method
-  if (p_method == "chisq") {
-    # Theoretical chi-squared distribution
-    pvalue <- 1 - pchisq(chisq, df = df)
-
-  } else if (p_method == "empirical_null") {
-    # Use warm-up period to estimate the null distribution empirically
-    if (w < 5) {
-      warning("Empirical null requires warm-up >= 5, using chi-squared")
-      pvalue <- 1 - pchisq(chisq, df = df)
-    } else {
-      # Compute chi-squared values for warm-up period (these are our null samples)
-      chisq_null <- chisq[1:w]
-
-      # Fit the null distribution (scale the chi-squared)
-      # Under null, W ~ c * chi-squared(df) where c is a scaling factor
-      # Estimate c from warm-up: E[W] = c * df, so c = mean(W) / df
-      c_scale <- max(mean(chisq_null) / df, 0.1)
-
-      # P-values using scaled chi-squared
-      pvalue <- 1 - pchisq(chisq / c_scale, df = df)
-    }
-
-  } else if (p_method == "bootstrap") {
-    # Bootstrap null distribution from warm-up
-    if (w < 5) {
-      warning("Bootstrap requires warm-up >= 5, using chi-squared")
-      pvalue <- 1 - pchisq(chisq, df = df)
-    } else {
-      # Compute null chi-squared values from warm-up
-      chisq_null <- chisq[1:w]
-
-      # Empirical p-values
-      pvalue <- numeric(n)
-      for (t in 1:n) {
-        pvalue[t] <- (sum(chisq_null >= chisq[t]) + 1) / (w + 1)
-      }
-    }
-  }
-
-  # Exclude warm-up from results
-  test_idx <- if (w > 0) (w + 1):n else 1:n
-  chisq_test <- chisq[test_idx]
-  pvalue_test <- pvalue[test_idx]
-
-  # Multiple testing adjustment
-  adjpvalue <- p.adjust(pvalue_test, method = adjust_method)
-
-  # Signals (raw indices within test period)
-  signals_raw <- which(adjpvalue < alpha)
-
-  # Identify runs of consecutive signals
-  identify_runs <- function(sig_idx) {
-    if (length(sig_idx) == 0) return(list())
-
-    runs <- list()
-    run_start <- sig_idx[1]
-    run_end <- sig_idx[1]
-
-    for (i in 2:length(sig_idx)) {
-      if (sig_idx[i] == sig_idx[i-1] + 1) {
-        # Consecutive, extend current run
-        run_end <- sig_idx[i]
-      } else {
-        # Gap, save current run and start new one
-        runs[[length(runs) + 1]] <- c(start = run_start, end = run_end)
-        run_start <- sig_idx[i]
-        run_end <- sig_idx[i]
-      }
-    }
-    # Save final run
-    runs[[length(runs) + 1]] <- c(start = run_start, end = run_end)
-    runs
-  }
-
-  # Helper function to determine signal observation within a run
-  get_run_signal_obs <- function(run_start, run_end, position_method,
-                                 y_data = NULL, eta_data = NULL, tau_levels = NULL, w_offset = 0) {
-    obs_start <- run_start + w_offset
-    obs_end <- run_end + w_offset
-
-    if (position_method == "first") {
-      return(obs_start)
-
-    } else if (position_method == "last") {
-      return(obs_end)
-
-    } else if (position_method == "middle") {
-      return(floor((obs_start + obs_end) / 2))
-
-    } else if (position_method == "max_deviation") {
-      # Find observation with maximum deviation from the predictive median (fitted eta at tau = 0.5)
-      if (is.null(y_data) || is.null(eta_data)) {
-        warning("y and eta required for max_deviation; using 'first' instead")
-        return(obs_start)
-      }
-
-      # Find the index of the median quantile (tau = 0.5)
-      if (!is.null(tau_levels)) {
-        median_idx <- which.min(abs(tau_levels - 0.5))
-      } else {
-        # Fallback to middle index if taus not provided
-        median_idx <- ceiling(dim(eta_data)[2] / 2)
-      }
-
-      # Compute posterior mean of the predictive median (fitted eta at tau = 0.5)
-      eta_median <- apply(eta_data[, median_idx, , drop = FALSE], 3, mean)
-
-      # Calculate deviations for observations in this run
-      run_obs <- obs_start:obs_end
-      deviations <- abs(y_data[run_obs] - eta_median[run_obs])
-
-      # Return observation with maximum deviation
-      max_dev_idx <- which.max(deviations)
-      return(run_obs[max_dev_idx])
-    }
-  }
-
-  # Process runs
-  signal_runs <- identify_runs(signals_raw)
-
-  # Build signal runs data frame with signal_obs based on signal_position
-  if (length(signal_runs) > 0) {
-    signal_runs_df <- data.frame(
-      run_id = seq_along(signal_runs),
-      start_idx = sapply(signal_runs, `[`, "start"),
-      end_idx = sapply(signal_runs, `[`, "end"),
-      stringsAsFactors = FALSE
-    )
-    signal_runs_df$obs_start <- signal_runs_df$start_idx + w
-    signal_runs_df$obs_end <- signal_runs_df$end_idx + w
-    signal_runs_df$run_length <- signal_runs_df$end_idx - signal_runs_df$start_idx + 1
-
-    # Compute signal_obs for each run based on signal_position
-    signal_runs_df$signal_obs <- sapply(seq_len(nrow(signal_runs_df)), function(i) {
-      get_run_signal_obs(
-        signal_runs_df$start_idx[i],
-        signal_runs_df$end_idx[i],
-        signal_position,
-        y, eta, taus, w
-      )
-    })
-
-    # Representative signals (one per run, based on signal_position)
-    signals_representative <- signal_runs_df$signal_obs
-    first_signal <- min(signals_representative)
-  } else {
-    signal_runs_df <- data.frame(
-      run_id = integer(0), start_idx = integer(0), end_idx = integer(0),
-      obs_start = integer(0), obs_end = integer(0), run_length = integer(0),
-      signal_obs = integer(0)
-    )
-    signals_representative <- integer(0)
-    first_signal <- NA
-  }
-
-  list(
-    chisq = chisq_test,
-    pvalue = pvalue_test,
-    adjpvalue = adjpvalue,
-    signals = signals_raw,               # All significant observation indices (within test period)
-    signals_obs = signals_raw + w,       # All significant observations (absolute)
-    signal_runs = signal_runs_df,        # Data frame with run info
-    signals_representative = signals_representative,  # One signal per run based on signal_position
-    n_signals = length(signals_raw),
-    n_runs = nrow(signal_runs_df),
-    first_signal = first_signal,
-    Z_ref = Z_ref,
-    S_ref = S_ref,
-    Z_t = Z_t,
-    df = df,
-    w = w,
-    use_differencing = use_differencing,
-    alpha = alpha,
-    p_method = p_method,
-    signal_position = signal_position
-  )
-}
-
-
-# =============================================================================
 # Gamma-Based Change-Point Detection
 # =============================================================================
 
@@ -775,6 +502,42 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
   # Per-block summary p-value: minimum across quantiles (for backward compat)
   pvalue_posterior <- apply(pvalue_qj, 2, min)
 
+  # ============================================================
+  # Step 4: Per-Quantile, Per-Block Frequentist Z-Test (BQQ-Z)
+  # ============================================================
+  # z_{q,j} = mean(gamma_tilde_{q,j}) / sd(gamma_tilde_{q,j})
+  z_stat <- matrix(NA, m, r)
+  for (q in 1:m) {
+    for (j in 1:r) {
+      gt_mean <- mean(gamma_tilde[, q, j])
+      gt_sd <- sd(gamma_tilde[, q, j])
+      z_stat[q, j] <- if (gt_sd > 1e-12) gt_mean / gt_sd else 0
+    }
+  }
+
+  # Z-test p-values (respecting 'alternative')
+  if (alternative == "two.sided") {
+    pvalue_z_qj <- 2 * (1 - pnorm(abs(z_stat)))
+  } else if (alternative == "greater") {
+    pvalue_z_qj <- 1 - pnorm(z_stat)
+  } else if (alternative == "less") {
+    pvalue_z_qj <- pnorm(z_stat)
+  }
+
+  # Multiple testing corrections for Z-test
+  pvalue_z_vec <- as.vector(pvalue_z_qj)
+  adjp_z_holm <- matrix(p.adjust(pvalue_z_vec, method = "holm"), m, r)
+  adjp_z_bonf <- matrix(p.adjust(pvalue_z_vec, method = "bonferroni"), m, r)
+  adjp_z_bh <- matrix(p.adjust(pvalue_z_vec, method = "BH"), m, r)
+
+  # Block-level decisions for Z-test
+  significant_z_holm <- which(apply(adjp_z_holm < alpha, 2, any))
+  significant_z_bonf <- which(apply(adjp_z_bonf < alpha, 2, any))
+  significant_z_bh <- which(apply(adjp_z_bh < alpha, 2, any))
+
+  # Per-block summary p-value for Z-test
+  pvalue_z_block <- apply(pvalue_z_qj, 2, min)
+
   # Convert H column to observation number.
   # For combined designs (e.g., sustained + isolated + drift), H has multiple
   # column groups sharing the same time blocks. Map h_col back to the actual
@@ -839,11 +602,16 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
     h_col = 1:r,
     # Block-level summary p-value (min across quantiles)
     pvalue_posterior = pvalue_posterior,
-    # Block-level significance flags (after joint m*r correction)
+    pvalue_z = pvalue_z_block,
+    # Block-level significance flags — BQQ-Posterior (after joint m*r correction)
     significant_raw = 1:r %in% sig_blocks_raw,
     significant_holm = 1:r %in% significant_holm,
     significant_bonf = 1:r %in% significant_bonf,
-    significant_bh = 1:r %in% significant_bh
+    significant_bh = 1:r %in% significant_bh,
+    # Block-level significance flags — BQQ-Z (after joint m*r correction)
+    significant_z_holm = 1:r %in% significant_z_holm,
+    significant_z_bonf = 1:r %in% significant_z_bonf,
+    significant_z_bh = 1:r %in% significant_z_bh
   )
 
   # Add observation ranges
@@ -855,7 +623,7 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
     get_signal_obs(j, signal_position, y, eta, taus)
   })
 
-  # First detection (using signal_obs rather than obs_start)
+  # First detection — BQQ-Posterior (using signal_obs rather than obs_start)
   first_signal_holm <- if (length(significant_holm) > 0) {
     first_sig_block <- min(significant_holm)
     detected_blocks$signal_obs[first_sig_block]
@@ -871,23 +639,42 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
     detected_blocks$signal_obs[first_sig_block]
   } else NA
 
+  # First detection — BQQ-Z
+  first_signal_z_holm <- if (length(significant_z_holm) > 0) {
+    detected_blocks$signal_obs[min(significant_z_holm)]
+  } else NA
+
+  first_signal_z_bonf <- if (length(significant_z_bonf) > 0) {
+    detected_blocks$signal_obs[min(significant_z_bonf)]
+  } else NA
+
+  first_signal_z_bh <- if (length(significant_z_bh) > 0) {
+    detected_blocks$signal_obs[min(significant_z_bh)]
+  } else NA
+
   list(
     detected_blocks = detected_blocks,
     # Decorrelated gamma samples (n_iter x m x r)
     gamma_tilde = gamma_tilde,
-    # Per-quantile, per-block p-value matrices (m x r)
+    # BQQ-Posterior: per-quantile, per-block p-value matrices (m x r)
     pvalue_star = pvalue_star,
     pvalue_qj = pvalue_qj,
     adjp_holm = adjp_holm,
     adjp_bonf = adjp_bonf,
     adjp_bh = adjp_bh,
+    # BQQ-Z: per-quantile, per-block Z-statistics and p-value matrices (m x r)
+    z_stat = z_stat,
+    pvalue_z_qj = pvalue_z_qj,
+    adjp_z_holm = adjp_z_holm,
+    adjp_z_bonf = adjp_z_bonf,
+    adjp_z_bh = adjp_z_bh,
     # Per-quantile null threshold
     epsilon = epsilon,
     # Whitening matrix used for decorrelation
     Sigma_inv_sqrt = Sigma_inv_sqrt,
     # Posterior covariance matrix
     Sigma = Sigma,
-    # Block-level summary
+    # Block-level summary — BQQ-Posterior
     pvalue_posterior = pvalue_posterior,
     n_significant_holm = length(significant_holm),
     n_significant_bonf = length(significant_bonf),
@@ -895,6 +682,15 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
     first_signal_holm = first_signal_holm,
     first_signal_bonf = first_signal_bonf,
     first_signal_bh = first_signal_bh,
+    # Block-level summary — BQQ-Z
+    pvalue_z_block = pvalue_z_block,
+    n_significant_z_holm = length(significant_z_holm),
+    n_significant_z_bonf = length(significant_z_bonf),
+    n_significant_z_bh = length(significant_z_bh),
+    first_signal_z_holm = first_signal_z_holm,
+    first_signal_z_bonf = first_signal_z_bonf,
+    first_signal_z_bh = first_signal_z_bh,
+    # Configuration
     signal_position = signal_position,
     alternative = alternative,
     alpha = alpha,
@@ -990,13 +786,13 @@ plot_gamma_detection <- function(result, true_shift = NULL,
 #' - Location: L_t = Q_t(0.5) (median)
 #' - Scale: S_t = Q_t(0.75) - Q_t(0.25) (IQR)
 #' - Skewness: Sk_t = [(Q_t(0.75) - Q_t(0.5)) - (Q_t(0.5) - Q_t(0.25))] / IQR (Bowley)
-#' - Kurtosis: K_t = [Q_t(0.95) - Q_t(0.05)] / IQR
+#' - Kurtosis: K_t = [Q_t(0.975) - Q_t(0.025)] / IQR
 #'
 #' @param eta 3D array [iterations, quantiles, time] from getEta()
-#' @param taus Vector of quantile levels (must include 0.05, 0.25, 0.5, 0.75, 0.95 or similar)
+#' @param taus Vector of quantile levels (must include 0.025, 0.25, 0.5, 0.75, 0.975 or similar)
 #' @return 3D array [iterations, 4, time] containing QSS statistics
 #' @export
-getQSS <- function(eta, taus = c(0.05, 0.25, 0.5, 0.75, 0.95)) {
+getQSS <- function(eta, taus = c(0.025, 0.25, 0.5, 0.75, 0.975)) {
 
   n_iter <- dim(eta)[1]
   m <- dim(eta)[2]
@@ -1008,11 +804,11 @@ getQSS <- function(eta, taus = c(0.05, 0.25, 0.5, 0.75, 0.95)) {
 
   # Find indices for key quantiles
   # Assuming order: tau1 < tau2 < tau3 < tau4 < tau5
-  idx_lo <- 1      # lowest (e.g., 0.05)
+  idx_lo <- 1      # lowest (e.g., 0.025)
   idx_q1 <- 2      # first quartile (e.g., 0.25)
   idx_med <- 3     # median (e.g., 0.5)
   idx_q3 <- 4      # third quartile (e.g., 0.75)
-  idx_hi <- 5      # highest (e.g., 0.95)
+  idx_hi <- 5      # highest (e.g., 0.975)
 
   # Initialize QSS array: [iterations, 4 stats, time]
   qss <- array(NA, dim = c(n_iter, 4, n))
@@ -1054,56 +850,21 @@ getQSS <- function(eta, taus = c(0.05, 0.25, 0.5, 0.75, 0.95)) {
 }
 
 
-#' Chi-squared test on QSS statistics
-#'
-#' @param qss 3D array [iterations, 4, time] from getQSS()
-#' @param w Warm-up period
-#' @param use_differencing If TRUE, use first-order differencing
-#' @param df_method Method for degrees of freedom
-#' @param p_method Method for p-values
-#' @param n_bootstrap Bootstrap replicates
-#' @param alpha Significance level
-#' @param adjust_method P-value adjustment method
-#' @param signal_position Method to determine signal position within a run of consecutive signals
-#' @param y Original data (required only for signal_position = "max_deviation")
-#' @param taus Quantile levels (required only for signal_position = "max_deviation")
-#' @return List with chi-squared statistics and diagnostic info
-#' @export
-getChisq_QSS <- function(qss, w = 0, use_differencing = FALSE,
-                          df_method = "reduced", p_method = "chisq",
-                          n_bootstrap = 1000, alpha = 0.05,
-                          adjust_method = "holm",
-                          signal_position = c("first", "last", "middle", "max_deviation"),
-                          y = NULL, taus = NULL) {
-
-  # QSS has dimension [iterations, 4, time]
-  # Convert to same format as eta: [iterations, stats, time]
-  getChisq_BQQ(qss, w = w, use_differencing = use_differencing,
-               df_method = df_method, p_method = p_method,
-               n_bootstrap = n_bootstrap, alpha = alpha,
-               adjust_method = adjust_method,
-               signal_position = signal_position,
-               y = y, taus = taus)
-}
-
-
 # =============================================================================
 # Visualization Functions
 # =============================================================================
 
-#' Plot fitted quantile curves with signals
+#' Plot fitted quantile curves
 #'
 #' @param y Original data
 #' @param eta 3D array [iterations, quantiles, time]
 #' @param taus Quantile levels
 #' @param w Warm-up period
-#' @param chisq_result Result from getChisq_BQQ() (optional)
 #' @param true_shift True shift point (optional, for simulation)
-#' @param alpha Significance level for highlighting signals
 #' @param main Plot title
 #' @export
-plot_quantile_chart <- function(y, eta, taus, w = 0, chisq_result = NULL,
-                                true_shift = NULL, alpha = 0.05,
+plot_quantile_chart <- function(y, eta, taus, w = 0,
+                                true_shift = NULL,
                                 main = "Fitted Quantile Curves") {
   n <- length(y)
   m <- length(taus)
@@ -1131,62 +892,8 @@ plot_quantile_chart <- function(y, eta, taus, w = 0, chisq_result = NULL,
     lines(1:n, eta_mean[j, ], col = colors[j], lwd = 1.5)
   }
 
-  # Signal markers
-  if (!is.null(chisq_result) && length(chisq_result$signals) > 0) {
-    sig_times <- chisq_result$signals + w
-    abline(v = sig_times, col = "orange", lty = 2, lwd = 0.5)
-  }
-
   legend("topleft", legend = paste0("tau=", taus),
          col = colors, lty = 1, lwd = 1.5, bty = "n", cex = 0.7)
-}
-
-
-#' Plot chi-squared control chart
-#'
-#' @param chisq_result Result from getChisq_BQQ()
-#' @param w Warm-up period
-#' @param true_shift True shift point (optional)
-#' @param main Plot title
-#' @export
-plot_chisq_chart <- function(chisq_result, w = 0, true_shift = NULL,
-                             main = "Chi-Squared Control Chart") {
-
-  n_test <- length(chisq_result$chisq)
-  time_idx <- (w + 1):(w + n_test)
-
-  # UCL from chi-squared distribution
-  ucl <- qchisq(1 - chisq_result$alpha, df = chisq_result$df)
-
-  # Plot
-  plot(time_idx, chisq_result$chisq, type = "l", lwd = 1.5,
-       xlab = "Time", ylab = "Chi-Squared Statistic",
-       main = main, col = "darkblue")
-
-  # UCL
-  abline(h = ucl, col = "red", lwd = 2, lty = 2)
-
-  # True shift
-  if (!is.null(true_shift)) {
-    abline(v = true_shift - 0.5, col = "green", lwd = 2, lty = 3)
-  }
-
-  # Signal points
-  if (length(chisq_result$signals) > 0) {
-    sig_times <- chisq_result$signals + w
-    sig_vals <- chisq_result$chisq[chisq_result$signals]
-    points(sig_times, sig_vals, pch = 19, col = "red", cex = 1.2)
-  }
-
-  legend("topright",
-         legend = c(paste0("UCL (alpha=", chisq_result$alpha, ")"),
-                    if (!is.null(true_shift)) "True shift" else NULL,
-                    if (length(chisq_result$signals) > 0) "Signals" else NULL),
-         col = c("red", if (!is.null(true_shift)) "green" else NULL,
-                 if (length(chisq_result$signals) > 0) "red" else NULL),
-         lty = c(2, if (!is.null(true_shift)) 3 else NULL, NA),
-         pch = c(NA, NA, if (length(chisq_result$signals) > 0) 19 else NULL),
-         bty = "n", cex = 0.8)
 }
 
 

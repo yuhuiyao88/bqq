@@ -8,7 +8,7 @@ Install the development version from GitHub:
 
 ```r
 # install.packages("devtools")
-devtools::install_github("bolus123/bqq")
+devtools::install_github("yuhuiyao88/bqq")
 ```
 
 ### Requirements
@@ -24,7 +24,7 @@ The BQQ methodology monitors a process by fitting a multi-quantile regression mo
 - **Interquantile shrinkage** that borrows strength across quantiles to stabilize outer-quantile estimates
 - **Grouped Bayesian LASSO** on shift coefficients with data-adaptive penalty learning
 - **Non-crossing penalties** to maintain quantile monotonicity
-- **Two inference pathways**: quantile-vector chi-squared charts and gamma-coefficient decorrelation-based tests
+- **Gamma-coefficient decorrelation-based** change-point detection
 - **Quantile Shape Statistics (QSS)**: location, scale, skewness, and kurtosis derived from the fitted quantile function
 - **Cross-validation** for hyperparameter tuning (non-crossing penalty, LASSO rate, IQ shrinkage rate)
 - **Visualization** functions for quantile charts, control charts, QSS time series, and detection barplots
@@ -60,11 +60,7 @@ fit <- getModel(y, taus, H = H, w = w,
 # 4. Extract predictive quantiles
 eta <- getEta(fit, H = H)
 
-# 5a. Chi-squared control chart (quantile-vector approach)
-chisq_result <- getChisq_BQQ(eta, w = w)
-plot_chisq_chart(chisq_result, w = w, true_shift = shift_start)
-
-# 5b. Gamma-based change-point detection (decorrelation approach)
+# 5. Gamma-based change-point detection (decorrelation approach)
 gamma_result <- detectChangepoints_gamma(fit, taus = taus, l = l, w = w)
 plot_gamma_detection(gamma_result, true_shift = shift_start)
 
@@ -94,8 +90,6 @@ plot_qss_series(qss, w = w, true_shift = shift_start)
 
 | Function | Description |
 |---|---|
-| `getChisq_BQQ()` | Chi-squared charting statistic on quantile vectors |
-| `getChisq_QSS()` | Chi-squared charting statistic on QSS (location, scale, skewness, kurtosis) |
 | `getQSS()` | Compute Quantile Shape Statistics from predictive quantiles |
 | `detectChangepoints_gamma()` | Decorrelation-based change-point detection using gamma coefficients |
 
@@ -112,7 +106,6 @@ plot_qss_series(qss, w = w, true_shift = shift_start)
 | Function | Description |
 |---|---|
 | `plot_quantile_chart()` | Fitted quantile curves overlaid on data |
-| `plot_chisq_chart()` | Chi-squared control chart with UCL |
 | `plot_gamma_detection()` | Block-level significance barplot from gamma detection |
 | `plot_qss_series()` | QSS time series (location, scale, skewness, kurtosis) with posterior bands |
 

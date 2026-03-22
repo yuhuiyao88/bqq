@@ -71,7 +71,11 @@
 #' @param control Optional list passed to \code{rstan::sampling()}.
 #' @param seed RNG seed.
 #' @param verbose show the log.
-#' @param map_hessian Logical; if \code{TRUE} compute Hessian in MAP step.
+#' @param map_hessian Logical; if \code{TRUE} (default), compute the Hessian in the
+#'   MAP step. The Hessian enables the standard Laplace approximation for posterior
+#'   sampling (see \code{\link{getLaplaceSamples}}). When \code{FALSE}, the Hessian
+#'   is not computed and posterior samples are generated using a heuristic perturbation
+#'   fallback instead.
 #' @param map_tol_obj,map_tol_grad,map_tol_rel_grad,map_tol_param MAP optimizer tolerances.
 #' @param map_iter Maximum iterations for MAP optimization.
 #' @param fit_method One of "mcmc", "map_mcmc", or "map":
