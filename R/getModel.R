@@ -667,10 +667,6 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
           w_iq_gamma[q - 1, j] <- (diff_val + eps_w)^(-1)
         }
       }
-      med_w_iq_gamma <- stats::median(w_iq_gamma)
-      if (is.finite(med_w_iq_gamma) && med_w_iq_gamma > 0) {
-        w_iq_gamma <- w_iq_gamma / med_w_iq_gamma
-      }
     }
 
     if (p_slope > 0) {
@@ -680,10 +676,6 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
           diff_val <- abs(beta_pilot[q, j] - beta_pilot[q - 1, j])
           w_iq_beta[q - 1, j] <- (diff_val + eps_w)^(-1)
         }
-      }
-      med_w_iq_beta <- stats::median(w_iq_beta)
-      if (is.finite(med_w_iq_beta) && med_w_iq_beta > 0) {
-        w_iq_beta <- w_iq_beta / med_w_iq_beta
       }
     }
   } else if ((r > 0 || p_slope > 0) && !requireNamespace("quantreg", quietly = TRUE)) {
