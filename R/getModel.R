@@ -56,7 +56,7 @@
 #'   Effective penalty weight is \eqn{\sqrt{\lambda_{iq}^2}}.
 #' @param lambda_iq2_fixed Positive scalar; fixed value for \eqn{\lambda_{iq}^2} when
 #'   adaptive_iq = FALSE (default 1). Effective penalty = \eqn{\sqrt{\lambda_{iq2\_fixed}}}.
-#' @param T_rel Positive scalar "smoothing temperature" (dimensionless).
+#' @param eps_rel Positive scalar "smoothing temperature" (dimensionless).
 #' @param lambda_lasso2_a,lambda_lasso2_b Positive shape/rate hyperparameters for the
 #'   global LASSO rate \eqn{\lambda} (used when adaptive_gamma = TRUE).
 #' @param adaptive_gamma Logical; if TRUE (default), the global LASSO rate lambda_lasso2
@@ -129,7 +129,7 @@
 getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
                         alpha = 0.75, eps_w = 1e-6, c_sigma = 1.0,
                         beta_sd = 1.0,
-                        lambda_nc = 2, T_rel = 0.1,
+                        lambda_nc = 2, eps_rel = 0.1,
                         adaptive_iq = TRUE,
                         lambda_iq2_a = 1, lambda_iq2_b = 0.1,
                         lambda_iq2_fixed = 1,
@@ -263,7 +263,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
       int<lower=0, upper=1> adaptive_iq;  // 1 = data-adaptive, 0 = fixed
       real<lower=0> lambda_iq2_fixed;  // fixed value for lambda_iq^2 when adaptive_iq = 0
 
-      real T_rel;                      // smoothing temperature (dimensionless)
+      real eps_rel;                      // smoothing temperature (dimensionless)
 
       real<lower=0> lambda_lasso2_a;
       real<lower=0> lambda_lasso2_b;
@@ -372,7 +372,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
       }
 
       // Smoothing temperature on data scale
-      real<lower=1e-12> smooth_T = base_scale * T_rel;
+      real<lower=1e-12> smooth_T = base_scale * eps_rel;
 
       vector[n] y_eff;
       y_eff = y;
@@ -697,7 +697,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
     y = y, offset = offset, tau_q = taus,
     mu0_init = as.vector(mu0_init),
     base_scale = base_scale, c_sigma = c_sigma, beta_sd = beta_sd,
-    lambda_nc = lambda_nc, T_rel = T_rel,
+    lambda_nc = lambda_nc, eps_rel = eps_rel,
     lambda_iq2_a = lambda_iq2_a, lambda_iq2_b = lambda_iq2_b,
     adaptive_iq = as.integer(adaptive_iq),
     lambda_iq2_fixed = lambda_iq2_fixed,

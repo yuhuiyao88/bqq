@@ -16,7 +16,7 @@ getModel(
   c_sigma = 1,
   beta_sd = 1,
   lambda_nc = 2,
-  T_rel = 0.1,
+  eps_rel = 0.1,
   adaptive_iq = TRUE,
   lambda_iq2_a = 1,
   lambda_iq2_b = 0.1,
@@ -74,7 +74,7 @@ coefficients \eqn{\gamma}. If \eqn{r = 0}, pass a zero-column matrix.}
 
 \item{lambda_nc}{Positive scalar weight for the non-crossing penalty (larger is stricter).}
 
-\item{T_rel}{Positive scalar "smoothing temperature" (dimensionless).}
+\item{eps_rel}{Positive scalar "smoothing temperature" (dimensionless).}
 
 \item{adaptive_iq}{Logical; if TRUE (default), the IQ shrinkage rate lambda_iq2
 is learned from data via a Gamma prior. If FALSE, lambda_iq2_fixed is used.}

@@ -11,7 +11,7 @@ cv_copss_map(
   X = NULL,
   w,
   grid_lambda_nc,
-  T_rel = 0.1,
+  eps_rel = 0.1,
   prior_gamma = "group_lasso",
   map_iter = 2000,
   seed = 123,
@@ -29,7 +29,7 @@ cv_copss_map(
 
 \item{grid_lambda_nc}{Numeric vector of candidate \code{lambda_nc} (non-crossing penalty).}
 
-\item{T_rel}{Smoothing temperature (default 0.1).}
+\item{eps_rel}{Smoothing temperature (default 0.1).}
 
 \item{prior_gamma}{Prior type for gamma (default "group_lasso").}
 
