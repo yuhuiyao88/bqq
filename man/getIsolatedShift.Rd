@@ -7,12 +7,12 @@
 getIsolatedShift(n, l, w = 0)
 }
 \arguments{
-\item{n}{Integer \eqn{\ge 1}. Number of rows (time points or observations).}
+\item{n}{Integer \(\ge 1\). Number of rows (time points or observations).}
 
-\item{l}{Integer \eqn{\ge 1}. Block length for each column. The last block
+\item{l}{Integer \(\ge 1\). Block length for each column. The last block
 may be shorter if it would exceed \code{n}.}
 
-\item{w}{Integer \eqn{\ge 0}. Warm-up (initial zeros). No columns start before
+\item{w}{Integer \(\ge 0\). Warm-up (initial zeros). No columns start before
 row \code{w + 1}. Defaults to \code{0}.}
 }
 \value{

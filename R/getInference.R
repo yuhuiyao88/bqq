@@ -50,51 +50,77 @@ getLaplaceSamples <- function(map_fit, hessian = NULL, n_samples = 1000,
                               noise_scale = 0.1, seed = NULL) {
   if (!is.null(seed)) set.seed(seed)
 
-  # Extract MAP estimates
   par_map <- map_fit$par
   par_names <- names(par_map)
-  n_par <- length(par_map)
+  k <- if (!is.null(hessian)) nrow(hessian) else 0
+  raw_par_names <- if (k > 0) par_names[1:k] else character(0)
 
-  # Extract indices for unconstrained parameters
-  mu_idx <- grep("^mu\\[", par_names)
-  beta_idx <- grep("^beta\\[", par_names)
-  gamma_idx <- grep("^gamma\\[", par_names)
-  tau_rw_idx <- grep("^tau_rw\\[", par_names)
-  unc_idx <- c(mu_idx, beta_idx, gamma_idx)
-
-  # Helper: parse 2D indices from names like "gamma[1,2]"
-  parse_2d <- function(idx, prefix) {
-    dims_str <- gsub(paste0(prefix, "\\[|\\]"), "", par_names[idx])
+  parse_2d <- function(names_vec, idx, prefix) {
+    dims_str <- gsub(paste0(prefix, "\\[|\\]"), "", names_vec[idx])
     dims_split <- strsplit(dims_str, ",")
-    list(row = as.integer(sapply(dims_split, `[`, 1)),
-         col = as.integer(sapply(dims_split, `[`, 2)))
+    list(
+      row = as.integer(sapply(dims_split, `[`, 1)),
+      col = as.integer(sapply(dims_split, `[`, 2))
+    )
   }
 
-  # Helper: scatter samples into 3D array
-  scatter <- function(samp_mat, parsed, n_samples) {
-    nr <- max(parsed$row); nc <- max(parsed$col)
+  scatter <- function(samp_mat, parsed, n_samples, n_row = NULL, n_col = NULL) {
+    nr <- if (is.null(n_row)) max(parsed$row) else n_row
+    nc <- if (is.null(n_col)) max(parsed$col) else n_col
     arr <- array(NA, dim = c(n_samples, nr, nc))
-    for (i in seq_along(parsed$row)) arr[, parsed$row[i], parsed$col[i]] <- samp_mat[, i]
+    for (i in seq_along(parsed$row)) {
+      arr[, parsed$row[i], parsed$col[i]] <- samp_mat[, i]
+    }
     arr
   }
 
-  mu_parsed <- if (length(mu_idx) > 0) parse_2d(mu_idx, "mu") else NULL
-  beta_parsed <- if (length(beta_idx) > 0) parse_2d(beta_idx, "beta") else NULL
-  gamma_parsed <- if (length(gamma_idx) > 0) parse_2d(gamma_idx, "gamma") else NULL
+  parse_1d <- function(names_vec, idx, prefix) {
+    dims_str <- gsub(paste0(prefix, "\\[|\\]"), "", names_vec[idx])
+    as.integer(dims_str)
+  }
 
-  # Try proper Laplace approximation using Hessian
+  mu_idx_tp    <- grep("^mu\\[", par_names)
+  beta_idx_tp  <- grep("^beta\\[", par_names)
+  gamma_idx_tp <- grep("^gamma\\[", par_names)
+
+  z_incr_idx <- grep("^z_incr\\[", raw_par_names)
+  tau_rw_idx <- grep("^tau_rw\\[", raw_par_names)
+  mu0_idx    <- grep("^mu0\\[", raw_par_names)
+  beta0_idx  <- grep("^beta0\\[", raw_par_names)
+  betaX_idx  <- grep("^betaX\\[", raw_par_names)
+  gamma_idx  <- grep("^gamma\\[", raw_par_names)
+  eta_param_idx <- c(z_incr_idx, tau_rw_idx, mu0_idx, beta0_idx, betaX_idx, gamma_idx)
+
+  mu_tp_parsed    <- if (length(mu_idx_tp) > 0) parse_2d(par_names, mu_idx_tp, "mu") else NULL
+  beta_tp_parsed  <- if (length(beta_idx_tp) > 0) parse_2d(par_names, beta_idx_tp, "beta") else NULL
+  gamma_tp_parsed <- if (length(gamma_idx_tp) > 0) parse_2d(par_names, gamma_idx_tp, "gamma") else NULL
+
+  mu0_parsed   <- if (length(mu0_idx) > 0) parse_1d(raw_par_names, mu0_idx, "mu0") else NULL
+  beta0_parsed <- if (length(beta0_idx) > 0) parse_1d(raw_par_names, beta0_idx, "beta0") else NULL
+  betaX_parsed <- if (length(betaX_idx) > 0) parse_2d(raw_par_names, betaX_idx, "betaX") else NULL
+  gamma_parsed <- if (length(gamma_idx) > 0) parse_2d(raw_par_names, gamma_idx, "gamma") else NULL
+
   samples_unc <- NULL
-  if (!is.null(hessian) && nrow(hessian) == n_par && length(unc_idx) > 0) {
+  mu_array <- NULL
+  beta_array <- NULL
+  gamma_array <- NULL
+  tau_rw_mat <- NULL
+  if (!is.null(hessian) && k > 0 && length(eta_param_idx) > 0) {
     samples_unc <- tryCatch({
+      theta_unc_full <- as.numeric(par_map[1:k])
+      if (length(tau_rw_idx) > 0) {
+        theta_unc_full[tau_rw_idx] <- log(pmax(par_map[tau_rw_idx], 1e-10))
+      }
+
       H_neg <- -(hessian + t(hessian)) / 2
-      H_neg_reg <- H_neg + diag(1e-6, n_par)
+      H_neg_reg <- H_neg + diag(1e-6, k)
       Sigma_full <- solve(H_neg_reg)
-      Sigma_unc <- Sigma_full[unc_idx, unc_idx]
+      Sigma_unc <- Sigma_full[eta_param_idx, eta_param_idx, drop = FALSE]
       eig <- eigen(Sigma_unc, symmetric = TRUE)
       eig$values <- pmax(eig$values, 1e-8)
       L <- t(eig$vectors %*% diag(sqrt(eig$values)))
-      theta_map_unc <- par_map[unc_idx]
-      z_mat <- matrix(rnorm(n_samples * length(unc_idx)), n_samples, length(unc_idx))
+      theta_map_unc <- theta_unc_full[eta_param_idx]
+      z_mat <- matrix(rnorm(n_samples * length(eta_param_idx)), n_samples, length(eta_param_idx))
       sweep(z_mat %*% L, 2, theta_map_unc, "+")
     }, error = function(e) {
       warning("Hessian-based Laplace failed: ", conditionMessage(e),
@@ -103,57 +129,148 @@ getLaplaceSamples <- function(map_fit, hessian = NULL, n_samples = 1000,
     })
   }
 
-  mu_unc_cols <- seq_along(mu_idx)
-  beta_unc_cols <- length(mu_idx) + seq_along(beta_idx)
-  gamma_unc_cols <- length(mu_idx) + length(beta_idx) + seq_along(gamma_idx)
+  z_incr_cols <- seq_along(z_incr_idx)
+  tau_rw_cols <- length(z_incr_idx) + seq_along(tau_rw_idx)
+  mu0_cols    <- length(z_incr_idx) + length(tau_rw_idx) + seq_along(mu0_idx)
+  beta0_cols  <- length(z_incr_idx) + length(tau_rw_idx) + length(mu0_idx) + seq_along(beta0_idx)
+  betaX_cols  <- length(z_incr_idx) + length(tau_rw_idx) + length(mu0_idx) + length(beta0_idx) + seq_along(betaX_idx)
+  gamma_cols  <- length(z_incr_idx) + length(tau_rw_idx) + length(mu0_idx) + length(beta0_idx) + length(betaX_idx) + seq_along(gamma_idx)
 
   if (!is.null(samples_unc)) {
-    mu_array <- if (length(mu_idx) > 0) scatter(samples_unc[, mu_unc_cols, drop = FALSE], mu_parsed, n_samples)
-    beta_array <- if (length(beta_idx) > 0) scatter(samples_unc[, beta_unc_cols, drop = FALSE], beta_parsed, n_samples)
-    gamma_array <- if (length(gamma_idx) > 0) scatter(samples_unc[, gamma_unc_cols, drop = FALSE], gamma_parsed, n_samples)
+    tau_rw_mat <- if (length(tau_rw_idx) > 0) {
+      exp(samples_unc[, tau_rw_cols, drop = FALSE])
+    } else NULL
+
+    mu_array <- if (length(mu0_idx) > 0) {
+      m_mu <- max(mu0_parsed)
+      n_mu <- if (!is.null(mu_tp_parsed)) max(mu_tp_parsed$col) else 1L
+      arr <- array(NA, dim = c(n_samples, m_mu, n_mu))
+      for (i in seq_along(mu0_parsed)) {
+        arr[, mu0_parsed[i], ] <- samples_unc[, mu0_cols[i]]
+      }
+      arr
+    } else NULL
+
+    beta_array <- if (length(beta0_idx) > 0 || length(betaX_idx) > 0) {
+      m_beta <- max(c(beta0_parsed, if (!is.null(betaX_parsed)) betaX_parsed$row else integer(0)))
+      p_beta <- 1L + if (!is.null(betaX_parsed)) max(betaX_parsed$col) else 0L
+      arr <- array(0, dim = c(n_samples, m_beta, p_beta))
+      if (length(beta0_idx) > 0) {
+        for (i in seq_along(beta0_parsed)) {
+          arr[, beta0_parsed[i], 1] <- samples_unc[, beta0_cols[i]]
+        }
+      }
+      if (length(betaX_idx) > 0) {
+        for (i in seq_along(betaX_parsed$row)) {
+          arr[, betaX_parsed$row[i], betaX_parsed$col[i] + 1L] <- samples_unc[, betaX_cols[i]]
+        }
+      }
+      arr
+    } else NULL
+
+    gamma_array <- if (length(gamma_idx) > 0) {
+      scatter(samples_unc[, gamma_cols, drop = FALSE], gamma_parsed, n_samples)
+    } else NULL
   } else {
-    # Fallback: heuristic noise
-    mu_array <- if (length(mu_idx) > 0) {
-      m <- max(mu_parsed$row); n <- max(mu_parsed$col)
-      mu_map <- matrix(NA, m, n)
-      for (i in seq_along(mu_idx)) mu_map[mu_parsed$row[i], mu_parsed$col[i]] <- par_map[mu_idx[i]]
-      mu_sd <- matrix(NA, m, n)
-      for (q in 1:m) {
+    mu_array <- if (length(mu_idx_tp) > 0) {
+      m_mu <- max(mu_tp_parsed$row)
+      n_mu <- max(mu_tp_parsed$col)
+      mu_map <- matrix(NA, m_mu, n_mu)
+      for (i in seq_along(mu_idx_tp)) {
+        mu_map[mu_tp_parsed$row[i], mu_tp_parsed$col[i]] <- par_map[mu_idx_tp[i]]
+      }
+      mu_sd <- matrix(NA, m_mu, n_mu)
+      for (q in seq_len(m_mu)) {
         d_sd <- sd(diff(mu_map[q, ]), na.rm = TRUE)
         if (is.na(d_sd) || d_sd < 1e-6) d_sd <- 0.1
         mu_sd[q, ] <- d_sd * noise_scale
       }
-      arr <- array(NA, dim = c(n_samples, m, n))
-      for (s in 1:n_samples) arr[s, , ] <- mu_map + matrix(rnorm(m * n, 0, mu_sd), m, n)
+      arr <- array(NA, dim = c(n_samples, m_mu, n_mu))
+      for (s in seq_len(n_samples)) {
+        arr[s, , ] <- mu_map + matrix(rnorm(m_mu * n_mu, 0, mu_sd), m_mu, n_mu)
+      }
       arr
-    }
-    beta_array <- if (length(beta_idx) > 0) {
-      mb <- max(beta_parsed$row); pb <- max(beta_parsed$col)
+    } else if (length(mu0_idx) > 0) {
+      m_mu <- max(mu0_parsed)
+      n_mu <- 1L
+      mu0_map <- numeric(m_mu)
+      mu0_map[mu0_parsed] <- par_map[mu0_idx]
+      mu_sd <- pmax(abs(mu0_map) * noise_scale, 0.1)
+      arr <- array(NA, dim = c(n_samples, m_mu, n_mu))
+      for (s in seq_len(n_samples)) {
+        arr[s, , 1] <- mu0_map + rnorm(m_mu, 0, mu_sd)
+      }
+      arr
+    } else NULL
+
+    beta_array <- if (length(beta_idx_tp) > 0) {
+      mb <- max(beta_tp_parsed$row)
+      pb <- max(beta_tp_parsed$col)
       beta_map <- matrix(NA, mb, pb)
-      for (i in seq_along(beta_idx)) beta_map[beta_parsed$row[i], beta_parsed$col[i]] <- par_map[beta_idx[i]]
+      for (i in seq_along(beta_idx_tp)) {
+        beta_map[beta_tp_parsed$row[i], beta_tp_parsed$col[i]] <- par_map[beta_idx_tp[i]]
+      }
       beta_sd <- pmax(abs(beta_map) * noise_scale, 0.05)
       arr <- array(NA, dim = c(n_samples, mb, pb))
-      for (s in 1:n_samples) arr[s, , ] <- beta_map + matrix(rnorm(mb * pb, 0, beta_sd), mb, pb)
+      for (s in seq_len(n_samples)) {
+        arr[s, , ] <- beta_map + matrix(rnorm(mb * pb, 0, beta_sd), mb, pb)
+      }
       arr
-    }
-    gamma_array <- if (length(gamma_idx) > 0) {
-      mg <- max(gamma_parsed$row); rg <- max(gamma_parsed$col)
+    } else if (length(beta0_idx) > 0 || length(betaX_idx) > 0) {
+      m_beta <- max(c(beta0_parsed, if (!is.null(betaX_parsed)) betaX_parsed$row else integer(0)))
+      p_beta <- 1L + if (!is.null(betaX_parsed)) max(betaX_parsed$col) else 0L
+      beta_map <- matrix(0, m_beta, p_beta)
+      if (length(beta0_idx) > 0) beta_map[beta0_parsed, 1] <- par_map[beta0_idx]
+      if (length(betaX_idx) > 0) {
+        for (i in seq_along(betaX_parsed$row)) {
+          beta_map[betaX_parsed$row[i], betaX_parsed$col[i] + 1L] <- par_map[betaX_idx[i]]
+        }
+      }
+      beta_sd <- pmax(abs(beta_map) * noise_scale, 0.05)
+      arr <- array(NA, dim = c(n_samples, m_beta, p_beta))
+      for (s in seq_len(n_samples)) {
+        arr[s, , ] <- beta_map + matrix(rnorm(m_beta * p_beta, 0, beta_sd), m_beta, p_beta)
+      }
+      arr
+    } else NULL
+
+    gamma_array <- if (length(gamma_idx_tp) > 0) {
+      mg <- max(gamma_tp_parsed$row)
+      rg <- max(gamma_tp_parsed$col)
       gamma_map <- matrix(NA, mg, rg)
-      for (i in seq_along(gamma_idx)) gamma_map[gamma_parsed$row[i], gamma_parsed$col[i]] <- par_map[gamma_idx[i]]
+      for (i in seq_along(gamma_idx_tp)) {
+        gamma_map[gamma_tp_parsed$row[i], gamma_tp_parsed$col[i]] <- par_map[gamma_idx_tp[i]]
+      }
       gamma_sd <- pmax(abs(gamma_map) * noise_scale, 0.02)
       arr <- array(NA, dim = c(n_samples, mg, rg))
-      for (s in 1:n_samples) arr[s, , ] <- gamma_map + matrix(rnorm(mg * rg, 0, gamma_sd), mg, rg)
+      for (s in seq_len(n_samples)) {
+        arr[s, , ] <- gamma_map + matrix(rnorm(mg * rg, 0, gamma_sd), mg, rg)
+      }
       arr
-    }
-  }
+    } else if (length(gamma_idx) > 0) {
+      mg <- max(gamma_parsed$row)
+      rg <- max(gamma_parsed$col)
+      gamma_map <- matrix(NA, mg, rg)
+      for (i in seq_along(gamma_idx)) {
+        gamma_map[gamma_parsed$row[i], gamma_parsed$col[i]] <- par_map[gamma_idx[i]]
+      }
+      gamma_sd <- pmax(abs(gamma_map) * noise_scale, 0.02)
+      arr <- array(NA, dim = c(n_samples, mg, rg))
+      for (s in seq_len(n_samples)) {
+        arr[s, , ] <- gamma_map + matrix(rnorm(mg * rg, 0, gamma_sd), mg, rg)
+      }
+      arr
+    } else NULL
 
-  # tau_rw (always heuristic — bounded parameter, Hessian is in log space)
-  tau_rw_mat <- if (length(tau_rw_idx) > 0) {
-    tau_rw_map <- par_map[tau_rw_idx]
-    tau_rw_sd <- pmax(abs(tau_rw_map) * noise_scale, 0.01)
-    mat <- matrix(NA, n_samples, length(tau_rw_idx))
-    for (s in 1:n_samples) mat[s, ] <- pmax(tau_rw_map + rnorm(length(tau_rw_idx), 0, tau_rw_sd), 1e-6)
-    mat
+    tau_rw_mat <- if (length(tau_rw_idx) > 0) {
+      tau_rw_map <- par_map[tau_rw_idx]
+      tau_rw_sd <- pmax(abs(tau_rw_map) * noise_scale, 0.01)
+      mat <- matrix(NA, n_samples, length(tau_rw_idx))
+      for (s in seq_len(n_samples)) {
+        mat[s, ] <- pmax(tau_rw_map + rnorm(length(tau_rw_idx), 0, tau_rw_sd), 1e-6)
+      }
+      mat
+    }
   }
 
   list(mu = mu_array, beta = beta_array, gamma = gamma_array, tau_rw = tau_rw_mat)
@@ -171,23 +288,32 @@ getLaplaceSamples <- function(map_fit, hessian = NULL, n_samples = 1000,
 #' - "map": Uses pre-generated Laplacian approximation samples
 #'
 #' @param fit_result Full result from getModel()
-#' @param H Design matrix for gamma coefficients
-#' @param X Design matrix for beta coefficients (including intercept)
+#' @param H Design matrix for gamma coefficients. If \code{NULL}, uses \code{fit_result$H}.
+#' @param X Design matrix for user beta covariates (excluding intercept). If \code{NULL},
+#'   uses \code{fit_result$X}. For backward compatibility, a matrix that already includes
+#'   the intercept is also accepted.
 #' @param n_samples Number of samples for Laplace approximation (only used if fit_result
 #'   doesn't have laplace_samples and needs to generate them)
 #' @param seed Random seed (only used if generating new Laplace samples)
 #' @return 3D array [iterations, quantiles, time]
 #' @export
-getEta <- function(fit_result, H, X = NULL, offset = NULL, n_samples = 1000, seed = NULL) {
+getEta <- function(fit_result, H = NULL, X = NULL, offset = NULL, n_samples = 1000, seed = NULL) {
 
-  n <- nrow(H)
-  r <- ncol(H)
-
-  # X should include intercept as first column
-  if (is.null(X)) {
-    X <- matrix(1, n, 1)
+  if (is.null(H)) {
+    H <- fit_result$H
   }
-  p <- ncol(X)
+  if (is.null(X)) {
+    X <- fit_result$X
+  }
+
+  n <- if (!is.null(H)) nrow(H) else if (!is.null(X)) nrow(X) else length(fit_result$y)
+  r <- if (!is.null(H)) ncol(H) else 0
+
+  if (is.null(X)) {
+    X <- matrix(0, n, 0)
+  } else {
+    X <- as.matrix(X)
+  }
 
   # Offset defaults to zero
   if (is.null(offset)) {
@@ -261,6 +387,17 @@ getEta <- function(fit_result, H, X = NULL, offset = NULL, n_samples = 1000, see
     stop("Unknown fit_method: ", fit_method)
   }
 
+  p <- dim(beta_draws)[3]
+  if (ncol(X) == p) {
+    X_design <- X
+  } else if (ncol(X) + 1 == p) {
+    X_design <- cbind(Intercept = 1, X)
+  } else if (p == 1 && ncol(X) == 0) {
+    X_design <- matrix(1, n, 1)
+  } else {
+    stop("X has incompatible number of columns for the extracted beta coefficients.")
+  }
+
   # Initialize eta array
   eta <- array(NA, dim = c(n_iter, m, n))
 
@@ -276,7 +413,7 @@ getEta <- function(fit_result, H, X = NULL, offset = NULL, n_samples = 1000, see
     }
 
     for (q in 1:m) {
-      xb <- as.numeric(X %*% beta_s[q, ])
+      xb <- as.numeric(X_design %*% beta_s[q, ])
       hg <- 0
       if (r > 0 && !is.null(gamma_draws)) {
         if (length(dim(gamma_draws)) == 3) {

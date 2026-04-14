@@ -1,19 +1,26 @@
+# --- Session-level cache for compiled Stan model ---
+# The Stan code is a fixed string; only stan_data changes between calls.
+# Compiling once per R session avoids redundant 30-60s compilations.
+.bqq_stan_cache <- new.env(parent = emptyenv())
+
 #' Smoothed Quantile Regression with Interquantile Shrinkage (Stan)
 #'
 #' Fits a multi-quantile (\eqn{m}) regression model where the conditional
 #' quantile function is modeled as a latent random walk in time (or index)
 #' with optional fixed effects \eqn{X} and structured effects \eqn{H}.
-#' The \eqn{H}-coefficients are shrunk via a **grouped Bayesian LASSO**
-#' (column-wise sharing across quantiles), and adjacent quantiles are softly
-#' penalized to discourage crossings. **Interquantile shrinkage** stabilizes
-#' outer quantiles by penalizing differences between adjacent quantile coefficients.
+#' The \eqn{H}-coefficients are shrunk via **Bayesian LASSO-type priors**
+#' (group, elementwise, heterogeneous-group, or adaptive), and adjacent quantiles
+#' are softly penalized to discourage crossings. **Interquantile shrinkage**
+#' stabilizes outer quantiles by penalizing differences between adjacent quantile
+#' coefficients.
 #'
 #' @section Model (high level):
 #' \describe{
 #'   \item{Data & design}{
 #'     \itemize{
 #'       \item \eqn{y_i} is optionally jittered (\code{u ~ Beta(1,1)}) and/or log-transformed.
-#'       \item Combined linear predictor \eqn{\eta_{qi} = \mu_{q,i} + x_i^\top \beta_q + h_i^\top \gamma_q + \mathrm{offset}_i}.
+#'       \item Combined linear predictor
+#'       \eqn{\eta_{qi} = \mu_{q,i} + \beta_{0,q} + x_i^\top \beta_{X,q} + h_i^\top \gamma_q + \mathrm{offset}_i}.
 #'       \item \eqn{\mu_{q,\cdot}} is a random walk per quantile: \eqn{\mu_{q,t} = \mu_{q,t-1} + \tau^{(rw)}_q z_{q,t-1}}.
 #'     }
 #'   }
@@ -24,8 +31,8 @@
 #'     where \eqn{w_{q,j} = (|\tilde{\theta}_{q,j} - \tilde{\theta}_{q-1,j}| + \epsilon_w)^{-1}}
 #'     and \eqn{\tilde{\theta}} are pilot estimates from separate quantile regressions
 #'     (Jiang, Wang, & Bondell 2013).
-#'     Weights are median-normalized for scale invariance and applied separately to gamma and beta slopes.
-#'     Falls back to uniform weights (all 1) when quantreg is not available.
+#'     Weights are applied separately to gamma and beta slopes.
+#'     Falls back to uniform weights (all 1) when \pkg{quantreg} is not available.
 #'     Note: Intercept is NOT penalized (per Jiang, Wang, & Bondell 2013).
 #'     Note: mu (random walk) is NOT penalized to allow quantile-specific temporal evolution.
 #'   }
@@ -40,13 +47,19 @@
 #' @param H Numeric matrix \eqn{n \times r} of structured predictors for group-lasso
 #'   coefficients \eqn{\gamma}. If \eqn{r = 0}, pass a zero-column matrix.
 #' @param w Integer \eqn{\ge 1}. Used for initial quantile estimation from first w observations.
-#' @param X Optional numeric matrix \eqn{n \times p_x} of additional predictors.
+#' @param X Optional numeric matrix \eqn{n \times p_x} of user-supplied covariates.
+#'   An intercept column is added internally and assigned its own weakly informative prior.
 #' @param offset Optional numeric vector of length \eqn{n} added to the linear predictor.
-#' @param alpha Positive scalar exponent for adaptive LASSO weights (default 0.75).
+#' @param alpha Deprecated scalar retained for backward compatibility. It is no
+#'   longer used in the \code{adaptive_lasso} or \code{het_group_lasso} prior
+#'   construction.
 #' @param eps_w Positive scalar added to pilot estimates for numerical stability
-#'   in both adaptive LASSO weights and IQ shrinkage weights (default 1e-6).
+#'   in the IQ shrinkage weights (default 1e-6).
 #' @param c_sigma Positive scalar scaling factor for the base scale (default 1.0).
-#' @param beta_sd Positive scalar prior std dev for \code{beta} coefficients (default 1.0).
+#' @param beta0_sd Positive scalar prior std dev for the intercept coefficients
+#'   \code{beta0} (default 1.0).
+#' @param beta_sd Positive scalar prior std dev for \code{betaX} coefficients under
+#'   \code{prior_beta = "normal"} (default 1.0).
 #' @param lambda_nc Positive scalar weight for the non-crossing penalty (larger is stricter).
 #' @param adaptive_iq Logical; if TRUE (default), the IQ shrinkage rate lambda_iq2
 #'   is learned from data via a Gamma prior. If FALSE, lambda_iq2_fixed is used.
@@ -57,12 +70,23 @@
 #' @param lambda_iq2_fixed Positive scalar; fixed value for \eqn{\lambda_{iq}^2} when
 #'   adaptive_iq = FALSE (default 1). Effective penalty = \eqn{\sqrt{\lambda_{iq2\_fixed}}}.
 #' @param eps_rel Positive scalar "smoothing temperature" (dimensionless).
+#' @param adaptive_beta Logical; if TRUE (default), the beta-side shrinkage level
+#'   \eqn{\lambda_\beta^2} is learned from data for LASSO-type priors. If FALSE,
+#'   \code{lambda_beta2_fixed} is used.
+#' @param lambda_beta2_a,lambda_beta2_b Positive shape/rate hyperparameters for the
+#'   beta-side LASSO-type shrinkage hierarchy.
+#' @param lambda_beta2_fixed Positive scalar; fixed value for the beta-side shrinkage
+#'   level \eqn{\lambda_\beta^2} when \code{adaptive_beta = FALSE} (default 1).
 #' @param lambda_lasso2_a,lambda_lasso2_b Positive shape/rate hyperparameters for the
-#'   global LASSO rate \eqn{\lambda} (used when adaptive_gamma = TRUE).
-#' @param adaptive_gamma Logical; if TRUE (default), the global LASSO rate lambda_lasso2
-#'   is learned from data via a Gamma prior. If FALSE, lambda_lasso2_fixed is used as a fixed value.
-#' @param lambda_lasso2_fixed Positive scalar; fixed value for global LASSO rate when
-#'   adaptive_gamma = FALSE (default 1).
+#'   LASSO-type shrinkage hierarchy. Their exact role depends on \code{prior_gamma}:
+#'   they govern the global \eqn{\lambda^2} prior for \code{"lasso"}, \code{"group_lasso"},
+#'   and \code{"het_group_lasso"}, and the global hyperprior driving the local
+#'   coefficient-specific shrinkage in \code{"adaptive_lasso"}.
+#' @param adaptive_gamma Logical; if TRUE (default), the global shrinkage level
+#'   \eqn{\lambda^2} is learned from data via a Gamma prior. If FALSE, the fixed
+#'   value \code{lambda_lasso2_fixed} is used.
+#' @param lambda_lasso2_fixed Positive scalar; fixed value for the global shrinkage
+#'   level \eqn{\lambda^2} when \code{adaptive_gamma = FALSE} (default 1).
 #' @param log_flag Integer \code{0/1}. If 1, fit on \code{log(y)}.
 #' @param jittering Integer \code{0/1}. If 1, add \eqn{u \sim \mathrm{Beta}(1,1)} to \eqn{y}.
 #' @param chains Number of MCMC chains.
@@ -86,7 +110,18 @@
 #'   }
 #' @param laplace_n_samples Number of samples for Laplacian approximation (when fit_method = "map").
 #' @param laplace_noise_scale Scale factor for parameter perturbation in Laplacian approximation.
-#' @param prior_gamma Prior type for gamma: "group_lasso", "lasso", "spike_slab", "het_group_lasso", "adaptive_lasso".
+#' @param prior_beta Prior type for \code{betaX}: \code{"normal"}, \code{"lasso"},
+#'   \code{"spike_slab"}, \code{"group_lasso"}, \code{"het_group_lasso"}, or
+#'   \code{"adaptive_lasso"}. The intercept \code{beta0} always retains the weakly
+#'   informative normal prior specified by \code{beta0_sd}.
+#' @param prior_gamma Prior type for gamma: \code{"group_lasso"}, \code{"lasso"},
+#'   \code{"spike_slab"}, \code{"het_group_lasso"}, or \code{"adaptive_lasso"}.
+#'   The \code{"adaptive_lasso"} option follows a Leng et al. (2014)-style hierarchy
+#'   with coefficient-specific local shrinkage parameters. The
+#'   \code{"het_group_lasso"} option combines group-level shrinkage with
+#'   coefficient-level local scales, without pilot weights.
+#' @param beta_spike_sd,beta_slab_sd,beta_slab_pi_a,beta_slab_pi_b Spike-and-slab
+#'   hyperparameters for \code{betaX}.
 #' @param spike_sd,slab_sd,slab_pi_a,slab_pi_b Spike-and-slab hyperparameters.
 #'
 #' @return A list with components:
@@ -102,6 +137,9 @@
 #' @references
 #' Jiang, L., Wang, H. J., & Bondell, H. D. (2013). Interquantile Shrinkage in Regression Models.
 #' Journal of Computational and Graphical Statistics, 22(4), 970-986.
+#'
+#' Leng, C., Tran, M. N., & Nott, D. (2014). Bayesian adaptive lasso.
+#' Annals of the Institute of Statistical Mathematics, 66(2), 221-244.
 #'
 #' @examples
 #' \donttest{
@@ -120,19 +158,17 @@
 #' @importFrom grDevices rgb rainbow
 #' @importFrom MASS ginv
 #' @export
-#
-# --- Session-level cache for compiled Stan model ---
-# The Stan code is a fixed string; only stan_data changes between calls.
-# Compiling once per R session avoids redundant 30-60s compilations.
-.bqq_stan_cache <- new.env(parent = emptyenv())
 
 getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
                         alpha = 0.75, eps_w = 1e-6, c_sigma = 1.0,
-                        beta_sd = 1.0,
+                        beta0_sd = 1.0, beta_sd = 1.0,
                         lambda_nc = 2, eps_rel = 0.1,
                         adaptive_iq = TRUE,
                         lambda_iq2_a = 1, lambda_iq2_b = 0.1,
                         lambda_iq2_fixed = 1,
+                        adaptive_beta = TRUE,
+                        lambda_beta2_a = 1, lambda_beta2_b = 0.05,
+                        lambda_beta2_fixed = 1,
                         adaptive_gamma = TRUE,
                         lambda_lasso2_a = 1, lambda_lasso2_b = 0.05,
                         lambda_lasso2_fixed = 1,
@@ -147,13 +183,27 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
                         fit_method = c("mcmc", "map_mcmc", "map"),
                         laplace_n_samples = 1000,
                         laplace_noise_scale = 0.1,
+                        prior_beta = c("normal", "lasso", "spike_slab",
+                                       "group_lasso", "het_group_lasso", "adaptive_lasso"),
                         prior_gamma = c("group_lasso", "lasso", "spike_slab",
                                         "het_group_lasso", "adaptive_lasso"),
+                        beta_spike_sd = 0.05, beta_slab_sd = 2.0,
+                        beta_slab_pi_a = 1, beta_slab_pi_b = 1,
                         spike_sd = 0.05, slab_sd = 2.0,
                         slab_pi_a = 1, slab_pi_b = 1) {
 
+  prior_beta  <- match.arg(prior_beta)
   prior_gamma <- match.arg(prior_gamma)
   fit_method  <- match.arg(fit_method)
+  prior_beta_code <- switch(
+    prior_beta,
+    normal            = 1L,
+    lasso             = 2L,
+    spike_slab        = 3L,
+    group_lasso       = 4L,
+    het_group_lasso   = 5L,
+    adaptive_lasso    = 6L
+  )
   prior_code <- switch(
     prior_gamma,
     group_lasso        = 1L,
@@ -162,41 +212,6 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
     het_group_lasso    = 4L,
     adaptive_lasso     = 5L
   )
-
-  safe_gamma_weights <- function(y, H, tau, alpha, eps_w, lambda_lasso = NULL) {
-    r <- ncol(H)
-    if (r == 0) return(numeric(0))
-
-    fit_q <- try(
-      suppressWarnings(quantreg::rq(y ~ H - 1, tau = tau, method = "fn")),
-      silent = TRUE
-    )
-
-    if (inherits(fit_q, "try-error")) {
-      n <- length(y)
-      if (is.null(lambda_lasso)) {
-        lambda_lasso <- sqrt(log(r + 1L) / n)
-      }
-      fit_q <- try(
-        suppressWarnings(
-          quantreg::rq(y ~ H - 1, tau = tau,
-                       method = "lasso", lambda = lambda_lasso)
-        ),
-        silent = TRUE
-      )
-      if (inherits(fit_q, "try-error")) {
-        warning("Both rq(method = 'fn') and rq(method = 'lasso') failed; using w = 1 for this tau.")
-        return(rep(1, r))
-      }
-    }
-
-    gamma_hat <- as.numeric(stats::coef(fit_q))
-    if (length(gamma_hat) != r) {
-      warning("Pilot quantile fit returned a length mismatch; using w = 1 for this tau.")
-      return(rep(1, r))
-    }
-    (abs(gamma_hat) + eps_w)^(-alpha)
-  }
 
   safe_pilot_coefs <- function(y, Z, tau, eps_w = 1e-3, lambda_lasso = NULL) {
     d <- ncol(Z)
@@ -240,11 +255,11 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
   stan_code <- "
   data {
       int<lower=1> n;                  // observations
-      int<lower=0> p;                  // predictors in eta (X)
+      int<lower=0> px;                 // user predictors in eta (X), excluding intercept
       int<lower=2> m;                  // quantiles
       int<lower=0> r;                  // predictors in eta (H)
 
-      matrix[n, p] X;                  // n x p
+      matrix[n, px] X;                 // n x px
       matrix[n, r] H;                  // n x r
       vector[n] y;
       vector[n] offset;
@@ -253,6 +268,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
 
       real<lower=1e-12> base_scale;
       real<lower=0>      c_sigma;
+      real<lower=0>      beta0_sd;
       real<lower=0>      beta_sd;
 
       real<lower=0> lambda_nc;         // non-crossing penalty weight
@@ -270,14 +286,23 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
       int<lower=0, upper=1> adaptive_gamma;      // 1 = data-adaptive, 0 = fixed
       real<lower=0> lambda_lasso2_fixed;         // fixed value when adaptive_gamma = 0
 
+      real<lower=0> lambda_beta2_a;
+      real<lower=0> lambda_beta2_b;
+      int<lower=0, upper=1> adaptive_beta;       // 1 = data-adaptive, 0 = fixed
+      real<lower=0> lambda_beta2_fixed;          // fixed value when adaptive_beta = 0
+
       real<lower=0, upper = 1> jittering;
       real<lower=0, upper = 1> log_flag;
 
-      // prior selector
+      // prior selectors
+      int<lower=1, upper=6> prior_beta_code;
       int<lower=1, upper=5> prior_code;
 
-      // weights for lasso / adaptive lasso / hetero group lasso
-      matrix[m, r] w_gamma;
+      // beta spike-and-slab hyperparameters
+      real<lower=0> beta_spike_sd;
+      real<lower=0> beta_slab_sd;
+      real<lower=0> beta_slab_pi_a;
+      real<lower=0> beta_slab_pi_b;
 
       // spike-and-slab hyperparameters
       real<lower=0> spike_sd;
@@ -298,17 +323,30 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
         for (b in 1:m)
           Q[a, b] = fmin(tau_q[a], tau_q[b]) - tau_q[a] * tau_q[b];
 
+      // Combined X design with explicit intercept
+      int p = px + 1;
+      matrix[n, p] X_design;
+      for (i in 1:n) {
+        X_design[i, 1] = 1;
+        if (px > 0) {
+          for (j in 1:px)
+            X_design[i, j + 1] = X[i, j];
+        }
+      }
+
       // Combined design Z = [X | H] (n x pr)
       int pr = p + r;
       matrix[n, pr] Z;
       {
         for (j in 1:p)
           for (i in 1:n)
-            Z[i, j] = X[i, j];
+            Z[i, j] = X_design[i, j];
 
-        for (j in 1:r)
-          for (i in 1:n)
-            Z[i, p + j] = H[i, j];
+        if (r > 0) {
+          for (j in 1:r)
+            for (i in 1:n)
+              Z[i, p + j] = H[i, j];
+        }
       }
 
       // Gram for score: Gs = Z'Z / n and its Cholesky
@@ -333,11 +371,21 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
       // z_incr and tau_rw removed: mu[q,t] = mu[q,t-1] = mu0[q]
       vector[m]       mu0;
 
-      // X-coefficients
-      matrix[m, p] beta;
+      // Intercept and user X-coefficients
+      vector[m] beta0;
+      matrix[m, px] betaX;
 
       // H-coefficients
       matrix[m, r] gamma;
+
+      // Group-level scale for beta group lasso (one per X column)
+      vector<lower=0>[px] sigma2_beta_group;
+
+      // Element-wise local scales for beta lasso/adaptive lasso
+      matrix<lower=0>[m, px] sigma2_beta;
+
+      // Local adaptive shrinkage rates for beta adaptive lasso
+      matrix<lower=0>[m, px] lambda2_beta_local;
 
       // Group-level scale for group lasso (one per H column)
       vector<lower=0>[r] sigma2_gamma_group;
@@ -345,14 +393,24 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
       // Element-wise local scales for lasso/adaptive lasso
       matrix<lower=0>[m, r] sigma2_gamma;
 
+      // Local adaptive shrinkage rates for adaptive lasso
+      matrix<lower=0>[m, r] lambda2_gamma_local;
+
+      // Global beta shrinkage rate (learned when adaptive_beta = 1)
+      real<lower=0> lambda_beta2;
+
       // Global LASSO rate (learned when adaptive_gamma = 1)
       real<lower=0> lambda_lasso2;
 
       // IQ shrinkage rate squared (learned when adaptive_iq = 1)
       real<lower=0> lambda_iq2;
 
-      // Spike-and-slab mixing weight
+      // Spike-and-slab mixing weights
+      real<lower=0, upper=1> pi_slab_beta;
       real<lower=0, upper=1> pi_slab;
+
+      // Group-level mixer for beta hetero group lasso
+      vector<lower=0>[px] omega_beta_group;
 
       // Group-level mixer for hetero group lasso (Levy)
       // One per time block (consistent with group lasso grouping)
@@ -365,10 +423,16 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
   transformed parameters {
       // RW paths
       matrix[m, n] mu;
+      matrix[m, px + 1] beta;
       for (q in 1:m) {
         mu[q,1] = mu0[q];
         for (t in 2:n)
           mu[q,t] = mu[q,t-1];
+        beta[q, 1] = beta0[q];
+        if (px > 0) {
+          for (j in 1:px)
+            beta[q, j + 1] = betaX[q, j];
+        }
       }
 
       // Smoothing temperature on data scale
@@ -396,8 +460,86 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
       // mu0 prior (no random walk innovation)
       mu0 ~ normal(mu0_init, 2 * base_scale);
 
-      // beta prior
-      if (p > 0) to_vector(beta) ~ normal(0, beta_sd);
+      // beta0 prior (intercept only)
+      beta0 ~ normal(0, beta0_sd);
+
+      // betaX prior (user covariates only)
+      if (px > 0) {
+        if (prior_beta_code == 1) {
+          to_vector(betaX) ~ normal(0, beta_sd);
+        } else if (prior_beta_code == 2) {
+          real lambda_beta2_eff;
+          if (adaptive_beta == 1) {
+            lambda_beta2 ~ gamma(lambda_beta2_a, lambda_beta2_b);
+            lambda_beta2_eff = lambda_beta2;
+          } else {
+            lambda_beta2_eff = lambda_beta2_fixed;
+          }
+          for (j in 1:m) {
+            for (i in 1:px) {
+              sigma2_beta[j, i] ~ exponential(0.5 * lambda_beta2_eff);
+              betaX[j, i] ~ normal(0, sqrt(sigma2_beta[j, i]));
+            }
+          }
+        } else if (prior_beta_code == 6) {
+          real lambda_beta2_eff;
+          if (adaptive_beta == 1) {
+            lambda_beta2 ~ gamma(lambda_beta2_a, lambda_beta2_b);
+            lambda_beta2_eff = lambda_beta2;
+          } else {
+            lambda_beta2_eff = lambda_beta2_fixed;
+          }
+          for (j in 1:m) {
+            for (i in 1:px) {
+              lambda2_beta_local[j, i] ~ gamma(1, lambda_beta2_eff);
+              sigma2_beta[j, i] ~ exponential(0.5 * lambda2_beta_local[j, i]);
+              betaX[j, i] ~ normal(0, sqrt(sigma2_beta[j, i]));
+            }
+          }
+        } else if (prior_beta_code == 3) {
+          pi_slab_beta ~ beta(beta_slab_pi_a, beta_slab_pi_b);
+          for (j in 1:m) {
+            for (i in 1:px) {
+              target += log_mix(
+                pi_slab_beta,
+                normal_lpdf(betaX[j, i] | 0, beta_slab_sd),
+                normal_lpdf(betaX[j, i] | 0, beta_spike_sd)
+              );
+            }
+          }
+        } else if (prior_beta_code == 4) {
+          real lambda_beta2_eff;
+          if (adaptive_beta == 1) {
+            lambda_beta2 ~ gamma(lambda_beta2_a, lambda_beta2_b);
+            lambda_beta2_eff = lambda_beta2;
+          } else {
+            lambda_beta2_eff = lambda_beta2_fixed;
+          }
+          for (i in 1:px) {
+            sigma2_beta_group[i] ~ gamma((m + 1) / 2, 0.5 * lambda_beta2_eff);
+            for (j in 1:m) {
+              betaX[j, i] ~ normal(0, sqrt(sigma2_beta_group[i]));
+            }
+          }
+        } else if (prior_beta_code == 5) {
+          real c_levy_beta;
+          real lambda_beta2_eff;
+          if (adaptive_beta == 1) {
+            lambda_beta2 ~ gamma(lambda_beta2_a, lambda_beta2_b);
+            lambda_beta2_eff = lambda_beta2;
+          } else {
+            lambda_beta2_eff = lambda_beta2_fixed;
+          }
+          c_levy_beta = lambda_beta2_eff;
+          for (i in 1:px) {
+            omega_beta_group[i] ~ inv_gamma(0.5, 0.5 * c_levy_beta);
+            for (j in 1:m) {
+              sigma2_beta[j, i] ~ exponential(0.5 * omega_beta_group[i]);
+              betaX[j, i] ~ normal(0, sqrt(sigma2_beta[j, i]));
+            }
+          }
+        }
+      }
 
       // ----- Score-based likelihood using Z = [X | H] with logit smoothing -----
       {
@@ -407,7 +549,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
           for (q in 1:m) {
             vector[pr] s_q = rep_vector(0.0, pr);
             for (i in 1:n) {
-              real xb = (p > 0) ? dot_product(to_vector(row(X, i)), to_vector(beta[q])) : 0;
+              real xb = dot_product(to_vector(row(X_design, i)), to_vector(beta[q]));
               real hb = (r > 0) ? dot_product(to_vector(row(H, i)), to_vector(gamma[q])) : 0;
 
               real eta = mu[q, i] + xb + hb + offset[i];
@@ -417,7 +559,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
               real Ilt = inv_logit(z);
               real psi = tau_q[q] - Ilt;
 
-              if (p > 0) s_q[1:p]      += to_vector(row(X, i)) * psi;
+              s_q[1:p]      += to_vector(row(X_design, i)) * psi;
               if (r > 0) s_q[(p+1):pr] += to_vector(row(H, i)) * psi;
             }
             S[, q] = s_q;
@@ -434,16 +576,16 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
       // ----- Priors on gamma (H-coefficients) -----
       if (r > 0) {
 
-        // Determine effective lambda_lasso2 value
+        // Determine effective lambda_lasso2 value for lasso-type priors.
         real lambda_lasso2_eff;
-        if (adaptive_gamma == 1) {
-          // Data-adaptive: learn lambda_lasso2 from data via Gamma prior
-          if (prior_code != 3) {
+        if (prior_code != 3) {
+          if (adaptive_gamma == 1) {
             lambda_lasso2 ~ gamma(lambda_lasso2_a, lambda_lasso2_b);
+            lambda_lasso2_eff = lambda_lasso2;
+          } else {
+            lambda_lasso2_eff = lambda_lasso2_fixed;
           }
-          lambda_lasso2_eff = lambda_lasso2;
         } else {
-          // Fixed: use the user-specified value
           lambda_lasso2_eff = lambda_lasso2_fixed;
         }
 
@@ -456,11 +598,21 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
             }
           }
 
-        // 2 = lasso or 5 = adaptive lasso
-        } else if (prior_code == 2 || prior_code == 5) {
+        // 2 = lasso
+        } else if (prior_code == 2) {
           for (j in 1:m) {
             for (i in 1:r) {
-              sigma2_gamma[j, i] ~ exponential(0.5 * lambda_lasso2_eff * square(w_gamma[j, i]));
+              sigma2_gamma[j, i] ~ exponential(0.5 * lambda_lasso2_eff);
+              gamma[j, i] ~ normal(0, sqrt(sigma2_gamma[j, i]));
+            }
+          }
+
+        // 5 = adaptive lasso with coefficient-specific local shrinkage
+        } else if (prior_code == 5) {
+          for (j in 1:m) {
+            for (i in 1:r) {
+              lambda2_gamma_local[j, i] ~ gamma(1, lambda_lasso2_eff);
+              sigma2_gamma[j, i] ~ exponential(0.5 * lambda2_gamma_local[j, i]);
               gamma[j, i] ~ normal(0, sqrt(sigma2_gamma[j, i]));
             }
           }
@@ -483,11 +635,11 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
         // omega_group[i]: block-level Levy scale (one per time block)
         // sigma2_gamma[j, i]: element-specific scale (one per quantile x block)
         } else if (prior_code == 4) {
-          real c_levy = lambda_lasso2_eff / 2;
+          real c_levy = lambda_lasso2_eff;
           for (i in 1:r) {
             omega_group[i] ~ inv_gamma(0.5, 0.5 * c_levy);
             for (j in 1:m) {
-              sigma2_gamma[j, i] ~ exponential(0.5 * square(omega_group[i] * w_gamma[j, i]));
+              sigma2_gamma[j, i] ~ exponential(0.5 * omega_group[i]);
               gamma[j, i] ~ normal(0, sqrt(sigma2_gamma[j, i]));
             }
           }
@@ -501,7 +653,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
         for (i in 1:n) {
           vector[m] eta_row;
           for (q in 1:m) {
-            real xb = (p > 0) ? dot_product(to_vector(row(X, i)), to_vector(beta[q])) : 0;
+            real xb = dot_product(to_vector(row(X_design, i)), to_vector(beta[q]));
             real hb = (r > 0) ? dot_product(to_vector(row(H, i)), to_vector(gamma[q])) : 0;
             eta_row[q] = mu[q, i] + xb + hb + offset[i];
           }
@@ -592,14 +744,13 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
     offset <- rep(0, n)
   }
 
-  X0 <- matrix(1, nrow = n, ncol = 1)
-
   if (is.null(X)) {
-    X <- X0
+    px <- 0L
+    X <- matrix(0, nrow = n, ncol = 0)
   } else {
-    X <- cbind(X0, X)
+    X <- as.matrix(X)
+    px <- ncol(X)
   }
-  p <- ncol(X)
 
   if (is.null(H)) {
     r <- 0
@@ -621,35 +772,15 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
     mu0_init <- stats::quantile(y, probs = taus)
   }
 
-  # ---- w_gamma construction ----
-  w_gamma <- matrix(1, nrow = m, ncol = r)
-
-  if (r > 0 && prior_gamma %in% c("het_group_lasso", "adaptive_lasso")) {
-    if (!requireNamespace("quantreg", quietly = TRUE)) {
-      stop("Package 'quantreg' is required for het_group_lasso / adaptive_lasso weights.")
-    }
-
-    for (q in seq_len(m)) {
-      w_gamma[q, ] <- safe_gamma_weights(
-        y   = y,
-        H   = H,
-        tau = taus[q],
-        alpha  = alpha,
-        eps_w  = eps_w
-      )
-    }
-
-    # No median normalization: use raw adaptive weights per Zou (2006).
-    # lambda_lasso2 (learned from data via Gamma prior) handles overall penalty scale.
-  }
-
   # ---- IQ weight matrices construction (data-driven adaptive weights) ----
-  p_slope <- max(p - 1L, 0L)
+  p_total <- px + 1L
+  p_slope <- px
   w_iq_gamma <- matrix(1, nrow = m - 1L, ncol = max(r, 0L))
   w_iq_beta  <- matrix(1, nrow = m - 1L, ncol = max(p_slope, 0L))
 
   if ((r > 0 || p_slope > 0) && requireNamespace("quantreg", quietly = TRUE)) {
-    Z_pilot <- if (r > 0) cbind(X, H) else X
+    X_design <- cbind(Intercept = 1, X)
+    Z_pilot <- if (r > 0) cbind(X_design, H) else X_design
     d_pilot <- ncol(Z_pilot)
 
     pilot_coefs <- matrix(NA, nrow = m, ncol = d_pilot)
@@ -660,7 +791,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
     }
 
     if (r > 0) {
-      gamma_pilot <- pilot_coefs[, (p + 1):(p + r), drop = FALSE]
+      gamma_pilot <- pilot_coefs[, (p_total + 1):(p_total + r), drop = FALSE]
       for (q in 2:m) {
         for (j in seq_len(r)) {
           diff_val <- abs(gamma_pilot[q, j] - gamma_pilot[q - 1, j])
@@ -670,7 +801,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
     }
 
     if (p_slope > 0) {
-      beta_pilot <- pilot_coefs[, 2:p, drop = FALSE]
+      beta_pilot <- pilot_coefs[, 2:p_total, drop = FALSE]
       for (q in 2:m) {
         for (j in seq_len(p_slope)) {
           diff_val <- abs(beta_pilot[q, j] - beta_pilot[q - 1, j])
@@ -684,21 +815,28 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
 
 
   stan_data <- list(
-    n = n, p = p, m = m, r = r,
+    n = n, px = px, m = m, r = r,
     X = X, H = H,
     y = y, offset = offset, tau_q = taus,
     mu0_init = as.vector(mu0_init),
-    base_scale = base_scale, c_sigma = c_sigma, beta_sd = beta_sd,
+    base_scale = base_scale, c_sigma = c_sigma, beta0_sd = beta0_sd, beta_sd = beta_sd,
     lambda_nc = lambda_nc, eps_rel = eps_rel,
     lambda_iq2_a = lambda_iq2_a, lambda_iq2_b = lambda_iq2_b,
     adaptive_iq = as.integer(adaptive_iq),
     lambda_iq2_fixed = lambda_iq2_fixed,
+    lambda_beta2_a = lambda_beta2_a, lambda_beta2_b = lambda_beta2_b,
+    adaptive_beta = as.integer(adaptive_beta),
+    lambda_beta2_fixed = lambda_beta2_fixed,
     lambda_lasso2_a = lambda_lasso2_a, lambda_lasso2_b = lambda_lasso2_b,
     adaptive_gamma = as.integer(adaptive_gamma),
     lambda_lasso2_fixed = lambda_lasso2_fixed,
     log_flag = log_flag, jittering = jittering,
+    prior_beta_code = prior_beta_code,
     prior_code = prior_code,
-    w_gamma = if (r > 0) w_gamma else matrix(0, m, 0),
+    beta_spike_sd = beta_spike_sd,
+    beta_slab_sd = beta_slab_sd,
+    beta_slab_pi_a = beta_slab_pi_a,
+    beta_slab_pi_b = beta_slab_pi_b,
     spike_sd = spike_sd,
     slab_sd  = slab_sd,
     slab_pi_a = slab_pi_a,
@@ -768,9 +906,10 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
     z_incr_idx <- grep("^z_incr\\[", raw_par_names)
     tau_rw_idx <- grep("^tau_rw",    raw_par_names)
     mu0_idx    <- grep("^mu0\\[",    raw_par_names)
-    beta_idx   <- grep("^beta\\[",   raw_par_names)
+    beta0_idx  <- grep("^beta0\\[",  raw_par_names)
+    betaX_idx  <- grep("^betaX\\[",  raw_par_names)
     gamma_idx  <- grep("^gamma\\[",  raw_par_names)
-    eta_param_idx <- c(z_incr_idx, tau_rw_idx, mu0_idx, beta_idx, gamma_idx)
+    eta_param_idx <- c(z_incr_idx, tau_rw_idx, mu0_idx, beta0_idx, betaX_idx, gamma_idx)
 
     # Also find mu (transformed parameter) indices for the heuristic fallback
     mu_tp_idx <- grep("^mu\\[", par_names)
@@ -786,7 +925,11 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
       dims_str <- gsub("tau_rw\\[|\\]", "", raw_par_names[tau_rw_idx])
       list(idx = as.integer(dims_str))
     } else NULL
-    beta_parsed   <- if (length(beta_idx) > 0) parse_2d_idx(raw_par_names, beta_idx, "beta") else NULL
+    beta0_parsed  <- if (length(beta0_idx) > 0) {
+      dims_str <- gsub("beta0\\[|\\]", "", raw_par_names[beta0_idx])
+      list(idx = as.integer(dims_str))
+    } else NULL
+    betaX_parsed  <- if (length(betaX_idx) > 0) parse_2d_idx(raw_par_names, betaX_idx, "betaX") else NULL
     gamma_parsed  <- if (length(gamma_idx) > 0) parse_2d_idx(raw_par_names, gamma_idx, "gamma") else NULL
     mu_tp_parsed  <- if (length(mu_tp_idx) > 0) parse_2d_idx(par_names, mu_tp_idx, "mu") else NULL
 
@@ -807,16 +950,28 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
         theta_unc_full[tau_rw_idx] <- log(pmax(par_map[tau_rw_idx], 1e-10))
 
         # Also transform other constrained params for correct Hessian inversion:
+        # sigma2_beta_group (<lower=0>): log
+        tbg_idx <- grep("^sigma2_beta_group", raw_par_names)
+        if (length(tbg_idx) > 0) theta_unc_full[tbg_idx] <- log(pmax(par_map[tbg_idx], 1e-10))
         # sigma2_gamma_group (<lower=0>): log
         tgg_idx <- grep("^sigma2_gamma_group", raw_par_names)
         if (length(tgg_idx) > 0) theta_unc_full[tgg_idx] <- log(pmax(par_map[tgg_idx], 1e-10))
+        # sigma2_beta (<lower=0>): log
+        tb_idx <- grep("^sigma2_beta\\[", raw_par_names)
+        if (length(tb_idx) > 0) theta_unc_full[tb_idx] <- log(pmax(par_map[tb_idx], 1e-10))
         # sigma2_gamma (<lower=0>): log
         tg_idx <- grep("^sigma2_gamma\\[", raw_par_names)
         if (length(tg_idx) > 0) theta_unc_full[tg_idx] <- log(pmax(par_map[tg_idx], 1e-10))
-        # lambda_lasso2, lambda_iq2, omega_group (<lower=0>): log
-        for (pat in c("^lambda_lasso2$", "^lambda_iq2$", "^omega_group")) {
+        # lambda_lasso2, lambda_beta2, lambda_iq2, omega_* (<lower=0>): log
+        for (pat in c("^lambda_lasso2$", "^lambda_beta2$", "^lambda2_beta_local\\[", "^lambda2_gamma_local\\[", "^lambda_iq2$", "^omega_group", "^omega_beta_group")) {
           idx_tmp <- grep(pat, raw_par_names)
           if (length(idx_tmp) > 0) theta_unc_full[idx_tmp] <- log(pmax(par_map[idx_tmp], 1e-10))
+        }
+        # pi_slab_beta (<lower=0, upper=1>): logit
+        pi_beta_idx <- grep("^pi_slab_beta$", raw_par_names)
+        if (length(pi_beta_idx) > 0) {
+          pv <- pmin(pmax(par_map[pi_beta_idx], 1e-10), 1 - 1e-10)
+          theta_unc_full[pi_beta_idx] <- log(pv / (1 - pv))
         }
         # pi_slab (<lower=0, upper=1>): logit
         pi_idx <- grep("^pi_slab$", raw_par_names)
@@ -855,8 +1010,9 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
         z_incr_cols <- seq_along(z_incr_idx)
         tau_rw_cols <- length(z_incr_idx) + seq_along(tau_rw_idx)
         mu0_cols    <- length(z_incr_idx) + length(tau_rw_idx) + seq_along(mu0_idx)
-        beta_cols   <- length(z_incr_idx) + length(tau_rw_idx) + length(mu0_idx) + seq_along(beta_idx)
-        gamma_cols  <- length(z_incr_idx) + length(tau_rw_idx) + length(mu0_idx) + length(beta_idx) + seq_along(gamma_idx)
+        beta0_cols  <- length(z_incr_idx) + length(tau_rw_idx) + length(mu0_idx) + seq_along(beta0_idx)
+        betaX_cols  <- length(z_incr_idx) + length(tau_rw_idx) + length(mu0_idx) + length(beta0_idx) + seq_along(betaX_idx)
+        gamma_cols  <- length(z_incr_idx) + length(tau_rw_idx) + length(mu0_idx) + length(beta0_idx) + length(betaX_idx) + seq_along(gamma_idx)
 
         # --- Reconstruct mu from mu0 (mu[q,t] = mu0[q] for all t) ---
         m_q <- max(mu0_parsed$idx)
@@ -879,10 +1035,25 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
         }
 
         # --- Assemble beta and gamma arrays ---
-        beta_arr <- if (length(beta_idx) > 0) {
-          scatter_to_array(samples_unc[, beta_cols, drop = FALSE],
-                           beta_parsed$row, beta_parsed$col,
-                           max(beta_parsed$row), max(beta_parsed$col), n_samples)
+        beta_arr <- if (length(beta0_idx) > 0 || length(betaX_idx) > 0) {
+          m_beta <- if (!is.null(beta0_parsed)) {
+            max(beta0_parsed$idx)
+          } else {
+            max(betaX_parsed$row)
+          }
+          p_beta <- 1 + if (!is.null(betaX_parsed)) max(betaX_parsed$col) else 0
+          arr <- array(0, dim = c(n_samples, m_beta, p_beta))
+          if (!is.null(beta0_parsed)) {
+            for (i in seq_along(beta0_parsed$idx)) {
+              arr[, beta0_parsed$idx[i], 1] <- samples_unc[, beta0_cols[i]]
+            }
+          }
+          if (!is.null(betaX_parsed)) {
+            for (i in seq_along(betaX_parsed$row)) {
+              arr[, betaX_parsed$row[i], betaX_parsed$col[i] + 1] <- samples_unc[, betaX_cols[i]]
+            }
+          }
+          arr
         } else NULL
 
         gamma_arr <- if (length(gamma_idx) > 0) {

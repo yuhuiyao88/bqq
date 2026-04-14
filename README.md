@@ -1,6 +1,6 @@
 # bqq: Bayesian Quintuple Quantile Chart
 
-**bqq** implements a Bayesian quintuple quantile (BQQ) charting approach for Phase I statistical process monitoring. It fits Bayesian multi-quantile regression models with interquantile shrinkage, grouped Bayesian LASSO, and non-crossing penalties via [Stan](https://mc-stan.org/), and provides control charts and change-point detection tools based on predictive quantile vectors.
+**bqq** implements a Bayesian quintuple quantile (BQQ) charting approach for Phase I statistical process monitoring. It fits Bayesian multi-quantile regression models with interquantile shrinkage, Bayesian LASSO-type priors, and non-crossing penalties via [Stan](https://mc-stan.org/), and provides control charts and change-point detection tools based on predictive quantile vectors.
 
 ## Installation
 
@@ -22,7 +22,7 @@ The BQQ methodology monitors a process by fitting a multi-quantile regression mo
 
 - **Model fitting** via MAP estimation, MCMC, or MAP-initialized MCMC with a built-in Stan program
 - **Interquantile shrinkage** that borrows strength across quantiles to stabilize outer-quantile estimates
-- **Grouped Bayesian LASSO** on shift coefficients with data-adaptive penalty learning
+- **Bayesian LASSO-type priors** on both user covariates and shift coefficients, with the intercept retained under a separate weakly informative prior
 - **Non-crossing penalties** to maintain quantile monotonicity
 - **Gamma-coefficient decorrelation-based** change-point detection
 - **Quantile Shape Statistics (QSS)**: location, scale, skewness, and kurtosis derived from the fitted quantile function
@@ -118,14 +118,15 @@ $$\eta_{q,i} = \mu_{q,i} + x_i^\top \beta_q + h_i^\top \gamma_q + \text{offset}_
 where:
 
 - $\mu_{q,\cdot}$ is a quantile-specific random walk capturing smooth temporal trends
-- $\beta_q$ are fixed-effect coefficients (optional covariates)
-- $\gamma_q$ are shift coefficients penalized by a grouped Bayesian LASSO
+- $\beta_{0,q}$ are intercept coefficients with weakly informative normal priors
+- $\beta_{X,q}$ are optional covariate coefficients with selectable priors (normal, lasso, adaptive lasso, spike-and-slab, group lasso, or heterogeneous group lasso)
+- $\gamma_q$ are shift coefficients penalized by a Bayesian LASSO-type prior
 - The loss function uses the smoothed check (pinball) loss
 
 ### Penalties
 
 - **Interquantile shrinkage**: Penalizes $|\gamma_q - \gamma_{q-1}|$ with weights that increase for outer quantiles, borrowing strength from the center of the quantile distribution (Jiang, Wang, & Bondell, 2013)
-- **Grouped Bayesian LASSO**: Shrinks each column of gamma jointly across quantile levels toward zero
+- **Bayesian LASSO-type priors**: Supports grouped, adaptive, and heterogeneous-group shrinkage on the shift coefficients
 - **Non-crossing penalty**: L1 hinge penalty on finite differences in $\tau$ to enforce quantile ordering
 
 ### Estimation Methods

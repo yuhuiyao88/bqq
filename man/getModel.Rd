@@ -12,8 +12,9 @@ getModel(
   offset = NULL,
   w = 0,
   alpha = 0.75,
-  eps_w = 0.001,
+  eps_w = 1e-06,
   c_sigma = 1,
+  beta0_sd = 1,
   beta_sd = 1,
   lambda_nc = 2,
   eps_rel = 0.1,
@@ -21,6 +22,10 @@ getModel(
   lambda_iq2_a = 1,
   lambda_iq2_b = 0.1,
   lambda_iq2_fixed = 1,
+  adaptive_beta = TRUE,
+  lambda_beta2_a = 1,
+  lambda_beta2_b = 0.05,
+  lambda_beta2_fixed = 1,
   adaptive_gamma = TRUE,
   lambda_lasso2_a = 1,
   lambda_lasso2_b = 0.05,
@@ -42,8 +47,14 @@ getModel(
   fit_method = c("mcmc", "map_mcmc", "map"),
   laplace_n_samples = 1000,
   laplace_noise_scale = 0.1,
+  prior_beta = c("normal", "lasso", "spike_slab", "group_lasso", "het_group_lasso",
+    "adaptive_lasso"),
   prior_gamma = c("group_lasso", "lasso", "spike_slab", "het_group_lasso",
     "adaptive_lasso"),
+  beta_spike_sd = 0.05,
+  beta_slab_sd = 2,
+  beta_slab_pi_a = 1,
+  beta_slab_pi_b = 1,
   spike_sd = 0.05,
   slab_sd = 2,
   slab_pi_a = 1,
@@ -58,19 +69,27 @@ getModel(
 \item{H}{Numeric matrix \eqn{n \times r} of structured predictors for group-lasso
 coefficients \eqn{\gamma}. If \eqn{r = 0}, pass a zero-column matrix.}
 
-\item{X}{Optional numeric matrix \eqn{n \times p_x} of additional predictors.}
+\item{X}{Optional numeric matrix \eqn{n \times p_x} of user-supplied covariates.
+An intercept column is added internally and assigned its own weakly informative prior.}
 
 \item{offset}{Optional numeric vector of length \eqn{n} added to the linear predictor.}
 
 \item{w}{Integer \eqn{\ge 1}. Used for initial quantile estimation from first w observations.}
 
-\item{alpha}{Positive scalar exponent for adaptive LASSO weights (default 0.75).}
+\item{alpha}{Deprecated scalar retained for backward compatibility. It is no
+longer used in the \code{adaptive_lasso} or \code{het_group_lasso} prior
+construction.}
 
-\item{eps_w}{Positive scalar added to pilot estimates for numerical stability (default 1e-3).}
+\item{eps_w}{Positive scalar added to pilot estimates for numerical stability
+in the IQ shrinkage weights (default 1e-6).}
 
 \item{c_sigma}{Positive scalar scaling factor for the base scale (default 1.0).}
 
-\item{beta_sd}{Positive scalar prior std dev for \code{beta} coefficients (default 1.0).}
+\item{beta0_sd}{Positive scalar prior std dev for the intercept coefficients
+\code{beta0} (default 1.0).}
+
+\item{beta_sd}{Positive scalar prior std dev for \code{betaX} coefficients under
+\code{prior_beta = "normal"} (default 1.0).}
 
 \item{lambda_nc}{Positive scalar weight for the non-crossing penalty (larger is stricter).}
 
@@ -87,14 +106,28 @@ Effective penalty weight is \eqn{\sqrt{\lambda_{iq}^2}}.}
 \item{lambda_iq2_fixed}{Positive scalar; fixed value for \eqn{\lambda_{iq}^2} when
 adaptive_iq = FALSE (default 1). Effective penalty = \eqn{\sqrt{\lambda_{iq2\_fixed}}}.}
 
-\item{adaptive_gamma}{Logical; if TRUE (default), the global LASSO rate lambda_lasso2
-is learned from data via a Gamma prior. If FALSE, lambda_lasso2_fixed is used as a fixed value.}
+\item{adaptive_beta}{Logical; if TRUE (default), the beta-side shrinkage level
+\eqn{\lambda_\beta^2} is learned from data for LASSO-type priors. If FALSE,
+\code{lambda_beta2_fixed} is used.}
+
+\item{lambda_beta2_a, lambda_beta2_b}{Positive shape/rate hyperparameters for the
+beta-side LASSO-type shrinkage hierarchy.}
+
+\item{lambda_beta2_fixed}{Positive scalar; fixed value for the beta-side shrinkage
+level \eqn{\lambda_\beta^2} when \code{adaptive_beta = FALSE} (default 1).}
+
+\item{adaptive_gamma}{Logical; if TRUE (default), the global shrinkage level
+\eqn{\lambda^2} is learned from data via a Gamma prior. If FALSE, the fixed
+value \code{lambda_lasso2_fixed} is used.}
 
 \item{lambda_lasso2_a, lambda_lasso2_b}{Positive shape/rate hyperparameters for the
-global LASSO rate \eqn{\lambda} (used when adaptive_gamma = TRUE).}
+LASSO-type shrinkage hierarchy. Their exact role depends on \code{prior_gamma}:
+they govern the global \eqn{\lambda^2} prior for \code{"lasso"}, \code{"group_lasso"},
+and \code{"het_group_lasso"}, and the global hyperprior driving the local
+coefficient-specific shrinkage in \code{"adaptive_lasso"}.}
 
-\item{lambda_lasso2_fixed}{Positive scalar; fixed value for global LASSO rate when
-adaptive_gamma = FALSE (default 1).}
+\item{lambda_lasso2_fixed}{Positive scalar; fixed value for the global shrinkage
+level \eqn{\lambda^2} when \code{adaptive_gamma = FALSE} (default 1).}
 
 \item{log_flag}{Integer \code{0/1}. If 1, fit on \code{log(y)}.}
 
@@ -112,7 +145,11 @@ adaptive_gamma = FALSE (default 1).}
 
 \item{verbose}{show the log.}
 
-\item{map_hessian}{Logical; if \code{TRUE} compute Hessian in MAP step.}
+\item{map_hessian}{Logical; if \code{TRUE} (default), compute the Hessian in the
+MAP step. The Hessian enables the standard Laplace approximation for posterior
+sampling (see \code{\link{getLaplaceSamples}}). When \code{FALSE}, the Hessian
+is not computed and posterior samples are generated using a heuristic perturbation
+fallback instead.}
 
 \item{map_tol_obj, map_tol_grad, map_tol_rel_grad, map_tol_param}{MAP optimizer tolerances.}
 
@@ -129,7 +166,20 @@ adaptive_gamma = FALSE (default 1).}
 
 \item{laplace_noise_scale}{Scale factor for parameter perturbation in Laplacian approximation.}
 
-\item{prior_gamma}{Prior type for gamma: "group_lasso", "lasso", "spike_slab", "het_group_lasso", "adaptive_lasso".}
+\item{prior_beta}{Prior type for \code{betaX}: \code{"normal"}, \code{"lasso"},
+\code{"spike_slab"}, \code{"group_lasso"}, \code{"het_group_lasso"}, or
+\code{"adaptive_lasso"}. The intercept \code{beta0} always retains the weakly
+informative normal prior specified by \code{beta0_sd}.}
+
+\item{prior_gamma}{Prior type for gamma: \code{"group_lasso"}, \code{"lasso"},
+\code{"spike_slab"}, \code{"het_group_lasso"}, or \code{"adaptive_lasso"}.
+The \code{"adaptive_lasso"} option follows a Leng et al. (2014)-style hierarchy
+with coefficient-specific local shrinkage parameters. The
+\code{"het_group_lasso"} option combines group-level shrinkage with
+coefficient-level local scales, without pilot weights.}
+
+\item{beta_spike_sd, beta_slab_sd, beta_slab_pi_a, beta_slab_pi_b}{Spike-and-slab
+hyperparameters for \code{betaX}.}
 
 \item{spike_sd, slab_sd, slab_pi_a, slab_pi_b}{Spike-and-slab hyperparameters.}
 }
@@ -148,10 +198,11 @@ A list with components:
 Fits a multi-quantile (\eqn{m}) regression model where the conditional
 quantile function is modeled as a latent random walk in time (or index)
 with optional fixed effects \eqn{X} and structured effects \eqn{H}.
-The \eqn{H}-coefficients are shrunk via a **grouped Bayesian LASSO**
-(column-wise sharing across quantiles), and adjacent quantiles are softly
-penalized to discourage crossings. **Interquantile shrinkage** stabilizes
-outer quantiles by penalizing differences between adjacent quantile coefficients.
+The \eqn{H}-coefficients are shrunk via **Bayesian LASSO-type priors**
+(group, elementwise, heterogeneous-group, or adaptive), and adjacent quantiles
+are softly penalized to discourage crossings. **Interquantile shrinkage**
+stabilizes outer quantiles by penalizing differences between adjacent quantile
+coefficients.
 }
 \section{Model (high level)}{
 
@@ -159,15 +210,20 @@ outer quantiles by penalizing differences between adjacent quantile coefficients
   \item{Data & design}{
     \itemize{
       \item \eqn{y_i} is optionally jittered (\code{u ~ Beta(1,1)}) and/or log-transformed.
-      \item Combined linear predictor \eqn{\eta_{qi} = \mu_{q,i} + x_i^\top \beta_q + h_i^\top \gamma_q + \mathrm{offset}_i}.
+      \item Combined linear predictor
+      \eqn{\eta_{qi} = \mu_{q,i} + \beta_{0,q} + x_i^\top \beta_{X,q} + h_i^\top \gamma_q + \mathrm{offset}_i}.
       \item \eqn{\mu_{q,\cdot}} is a random walk per quantile: \eqn{\mu_{q,t} = \mu_{q,t-1} + \tau^{(rw)}_q z_{q,t-1}}.
     }
   }
   \item{Interquantile shrinkage}{
-    Penalizes differences between adjacent quantile coefficients for gamma and beta slopes:
-    \eqn{\text{pen}_{\text{IQ}} = \sum_{q=2}^m w_q (|\gamma_{q} - \gamma_{q-1}| + |\beta_{q}^{slope} - \beta_{q-1}^{slope}|)}
-    where \eqn{w_q = 1/\sqrt{\tau_q(1-\tau_q)\tau_{q-1}(1-\tau_{q-1})}} gives more weight to outer quantiles.
-    This stabilizes outer quantiles by borrowing strength from inner quantiles.
+    Penalizes differences between adjacent quantile coefficients for gamma and beta slopes
+    using data-driven adaptive weights from pilot quantile regression estimates:
+    \eqn{\text{pen}_{\text{IQ}} = \sum_{q=2}^m \sum_j w_{q,j} |\theta_{q,j} - \theta_{q-1,j}|}
+    where \eqn{w_{q,j} = (|\tilde{\theta}_{q,j} - \tilde{\theta}_{q-1,j}| + \epsilon_w)^{-1}}
+    and \eqn{\tilde{\theta}} are pilot estimates from separate quantile regressions
+    (Jiang, Wang, & Bondell 2013).
+    Weights are applied separately to gamma and beta slopes.
+    Falls back to uniform weights (all 1) when \pkg{quantreg} is not available.
     Note: Intercept is NOT penalized (per Jiang, Wang, & Bondell 2013).
     Note: mu (random walk) is NOT penalized to allow quantile-specific temporal evolution.
   }
@@ -193,4 +249,7 @@ fit <- getModel(y, taus, H = H, w = 20, fit_method = "map",
 \references{
 Jiang, L., Wang, H. J., & Bondell, H. D. (2013). Interquantile Shrinkage in Regression Models.
 Journal of Computational and Graphical Statistics, 22(4), 970-986.
+
+Leng, C., Tran, M. N., & Nott, D. (2014). Bayesian adaptive lasso.
+Annals of the Institute of Statistical Mathematics, 66(2), 221-244.
 }

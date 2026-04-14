@@ -15,6 +15,7 @@ detectChangepoints_gamma(
   n_samples = 1000,
   alpha = 0.05,
   alternative = "two.sided",
+  whiten = TRUE,
   seed = NULL
 )
 }
@@ -46,7 +47,13 @@ compatibility when laplace_samples not available)}
 Matches R's t.test convention. "two.sided" uses decorrelated L2-norm magnitude test.
 "greater" tests H1: gamma > 0 (positive shift). "less" tests H1: gamma < 0 (negative shift).}
 
+\item{whiten}{Logical (default TRUE). If TRUE, apply whitening (decorrelation via
+Cholesky decomposition of the posterior covariance) to gamma samples before
+computing test statistics. If FALSE, use raw gamma samples directly.}
+
 \item{seed}{Random seed (only used when generating new Laplace samples)}
+
+\item{threshold}{Threshold for gamma L2 norm to declare significance}
 }
 \value{
 List with change-point detection results
@@ -60,16 +67,4 @@ represents shift effects at each block.
 Automatically detects the fit_method used and extracts gamma samples accordingly:
 - "mcmc" or "map_mcmc": Uses MCMC posterior draws
 - "map": Uses pre-generated Laplacian approximation samples
-}
-\examples{
-\donttest{
-set.seed(123)
-n <- 100
-y <- rnorm(n)
-taus <- c(0.25, 0.5, 0.75)
-H <- getIsolatedShift(n, l = 20, w = 20)
-fit <- getModel(y, taus, H = H, w = 20, fit_method = "map",
-                map_hessian = FALSE, map_iter = 500)
-result <- detectChangepoints_gamma(fit, taus = taus, l = 20, w = 20)
-}
 }

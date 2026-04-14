@@ -18,17 +18,3 @@ plot_qss_series(qss, w = 0, true_shift = NULL, main_prefix = "")
 \description{
 Plot QSS time series with posterior uncertainty
 }
-\examples{
-\donttest{
-set.seed(123)
-n <- 100
-y <- rnorm(n)
-taus <- c(0.05, 0.25, 0.5, 0.75, 0.95)
-H <- getIsolatedShift(n, l = 20, w = 20)
-fit <- getModel(y, taus, H = H, w = 20, fit_method = "map",
-                map_hessian = FALSE, map_iter = 500)
-eta <- getEta(fit, H = H)
-qss <- getQSS(eta, taus = taus)
-plot_qss_series(qss, w = 20)
-}
-}

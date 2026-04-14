@@ -15,11 +15,14 @@ getLaplaceSamples(
 \arguments{
 \item{map_fit}{MAP optimization result from getModel (the $map element)}
 
-\item{hessian}{Hessian matrix at MAP estimate (optional, currently not used)}
+\item{hessian}{Hessian matrix at MAP estimate. When provided and invertible,
+enables the standard Hessian-based Laplace approximation (Tier 1).
+When \code{NULL} or inversion fails, the heuristic fallback (Tier 2) is used.}
 
 \item{n_samples}{Number of posterior samples to generate (default: 1000)}
 
-\item{noise_scale}{Scale factor for parameter perturbation (default: 0.1)}
+\item{noise_scale}{Scale factor for parameter perturbation in the heuristic
+fallback (Tier 2 only). Default: 0.1. Ignored when Hessian-based Laplace succeeds.}
 
 \item{seed}{Random seed for reproducibility}
 }
@@ -27,21 +30,25 @@ getLaplaceSamples(
 List with parameter samples in the same structure as rstan::extract()
 }
 \description{
-When only MAP estimation is available, this function generates approximate
-posterior samples. Since Stan's Hessian is in unconstrained space with different
-dimensions, we use a parametric bootstrap approach:
-1. Extract MAP estimates for mu, beta, gamma
-2. Add uncertainty based on estimated residual variance and parameter structure
+Generates approximate posterior samples from a MAP fit using a two-tier strategy:
 }
-\examples{
-\donttest{
-set.seed(123)
-n <- 100
-y <- rnorm(n)
-taus <- c(0.25, 0.5, 0.75)
-H <- getIsolatedShift(n, l = 20, w = 20)
-fit <- getModel(y, taus, H = H, w = 20, fit_method = "map",
-                map_hessian = FALSE, map_iter = 500)
-samples <- getLaplaceSamples(fit$map, n_samples = 100)
-}
+\details{
+**Tier 1 (Hessian-based Laplace approximation):** When a Hessian matrix is provided
+and its inversion succeeds, the function constructs a standard Laplace approximation:
+a multivariate normal centered at the MAP estimate with covariance equal to the
+inverse of the negative Hessian. Sampling is performed on the unconstrained parameter
+scale (log for lower-bounded parameters, logit for unit-bounded parameters) and
+transformed back. A small ridge regularization (1e-6) is added for numerical
+stability, and eigenvalues are clamped at 1e-8 to ensure positive definiteness.
+
+**Tier 2 (Heuristic fallback):** When the Hessian is unavailable (\code{NULL}) or
+its inversion fails, the function falls back to a heuristic perturbation scheme:
+each parameter is perturbed independently with standard deviation proportional to
+\code{noise_scale} times the absolute MAP estimate (with small floors to prevent
+degenerate samples). This is a numerical safeguard, not a formal Laplace approximation.
+
+Note: When using \code{getModel()} with \code{fit_method = "map"} and
+\code{map_hessian = TRUE} (the default), the Hessian is computed automatically and
+Tier 1 is used. Setting \code{map_hessian = FALSE} bypasses Hessian computation
+and triggers the Tier 2 fallback.
 }

@@ -24,16 +24,3 @@ plot_gamma_detection(
 Plots block-level -log10(p-values) with significance coloring based on the
 selected multiple testing correction method.
 }
-\examples{
-\donttest{
-set.seed(123)
-n <- 100
-y <- rnorm(n)
-taus <- c(0.25, 0.5, 0.75)
-H <- getIsolatedShift(n, l = 20, w = 20)
-fit <- getModel(y, taus, H = H, w = 20, fit_method = "map",
-                map_hessian = FALSE, map_iter = 500)
-result <- detectChangepoints_gamma(fit, taus = taus, l = 20, w = 20)
-plot_gamma_detection(result)
-}
-}

@@ -4,16 +4,23 @@
 \alias{getEta}
 \title{Extract eta (fitted quantiles) from posterior samples or Laplace approximation}
 \usage{
-getEta(fit_result, H, X = NULL, offset = NULL, n_samples = 1000, seed = NULL)
+getEta(
+  fit_result,
+  H = NULL,
+  X = NULL,
+  offset = NULL,
+  n_samples = 1000,
+  seed = NULL
+)
 }
 \arguments{
 \item{fit_result}{Full result from getModel()}
 
-\item{H}{Design matrix for gamma coefficients}
+\item{H}{Design matrix for gamma coefficients. If \code{NULL}, uses \code{fit_result$H}.}
 
-\item{X}{Design matrix for beta coefficients (including intercept)}
-
-\item{offset}{Optional numeric vector of length n added to the linear predictor.}
+\item{X}{Design matrix for user beta covariates (excluding intercept). If \code{NULL},
+uses \code{fit_result$X}. For backward compatibility, a matrix that already includes
+the intercept is also accepted.}
 
 \item{n_samples}{Number of samples for Laplace approximation (only used if fit_result
 doesn't have laplace_samples and needs to generate them)}
@@ -27,16 +34,4 @@ doesn't have laplace_samples and needs to generate them)}
 Automatically detects the fit_method used and extracts posterior samples accordingly:
 - "mcmc" or "map_mcmc": Uses MCMC posterior draws from stanfit object
 - "map": Uses pre-generated Laplacian approximation samples
-}
-\examples{
-\donttest{
-set.seed(123)
-n <- 100
-y <- rnorm(n)
-taus <- c(0.25, 0.5, 0.75)
-H <- getIsolatedShift(n, l = 20, w = 20)
-fit <- getModel(y, taus, H = H, w = 20, fit_method = "map",
-                map_hessian = FALSE, map_iter = 500)
-eta <- getEta(fit, H = H)
-}
 }

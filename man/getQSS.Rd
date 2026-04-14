@@ -4,12 +4,12 @@
 \alias{getQSS}
 \title{Compute Quantile Shape Statistics (QSS) from predictive quantiles}
 \usage{
-getQSS(eta, taus = c(0.05, 0.25, 0.5, 0.75, 0.95))
+getQSS(eta, taus = c(0.025, 0.25, 0.5, 0.75, 0.975))
 }
 \arguments{
 \item{eta}{3D array [iterations, quantiles, time] from getEta()}
 
-\item{taus}{Vector of quantile levels (must include 0.05, 0.25, 0.5, 0.75, 0.95 or similar)}
+\item{taus}{Vector of quantile levels (must include 0.025, 0.25, 0.5, 0.75, 0.975 or similar)}
 }
 \value{
 3D array [iterations, 4, time] containing QSS statistics
@@ -19,18 +19,5 @@ Using quintuple quantiles (tau = 0.05, 0.25, 0.5, 0.75, 0.95), computes:
 - Location: L_t = Q_t(0.5) (median)
 - Scale: S_t = Q_t(0.75) - Q_t(0.25) (IQR)
 - Skewness: Sk_t = [(Q_t(0.75) - Q_t(0.5)) - (Q_t(0.5) - Q_t(0.25))] / IQR (Bowley)
-- Kurtosis: K_t = [Q_t(0.95) - Q_t(0.05)] / IQR
-}
-\examples{
-\donttest{
-set.seed(123)
-n <- 100
-y <- rnorm(n)
-taus <- c(0.05, 0.25, 0.5, 0.75, 0.95)
-H <- getIsolatedShift(n, l = 20, w = 20)
-fit <- getModel(y, taus, H = H, w = 20, fit_method = "map",
-                map_hessian = FALSE, map_iter = 500)
-eta <- getEta(fit, H = H)
-qss <- getQSS(eta, taus = taus)
-}
+- Kurtosis: K_t = [Q_t(0.975) - Q_t(0.025)] / IQR
 }
