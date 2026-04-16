@@ -41,22 +41,20 @@ detectChangepoints_gamma(
 \item{n_samples}{Number of samples for Laplace approximation (only used for backward
 compatibility when laplace_samples not available)}
 
-\item{alpha}{Significance level for credible interval test}
+\item{alpha}{Significance level for the posterior tail-area decision rule}
 
 \item{alternative}{Direction of the test: "two.sided" (default), "greater", or "less".
-Matches R's t.test convention. "two.sided" uses decorrelated L2-norm magnitude test.
-"greater" tests H1: gamma > 0 (positive shift). "less" tests H1: gamma < 0 (negative shift).}
+"greater" tests H1: gamma > 0 (positive shift). "less" tests H1: gamma < 0
+(negative shift).}
 
 \item{whiten}{Logical (default TRUE). If TRUE, apply whitening (decorrelation via
 Cholesky decomposition of the posterior covariance) to gamma samples before
-computing test statistics. If FALSE, use raw gamma samples directly.}
+computing posterior tail-area statistics. If FALSE, use raw gamma samples directly.}
 
 \item{seed}{Random seed (only used when generating new Laplace samples)}
-
-\item{threshold}{Threshold for gamma L2 norm to declare significance}
 }
 \value{
-List with change-point detection results
+List with posterior-tail-based change-point detection results
 }
 \description{
 Uses the H-matrix gamma coefficients directly for change-point detection.
