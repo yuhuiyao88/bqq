@@ -41,20 +41,29 @@ detectChangepoints_gamma(
 \item{n_samples}{Number of samples for Laplace approximation (only used for backward
 compatibility when laplace_samples not available)}
 
-\item{alpha}{Significance level for the posterior tail-area decision rule}
+\item{alpha}{Significance level used for both the BQQ-Posterior tail-area
+decision rule and the BQQ-Z asymptotic test.}
 
 \item{alternative}{Direction of the test: "two.sided" (default), "greater", or "less".
 "greater" tests H1: gamma > 0 (positive shift). "less" tests H1: gamma < 0
-(negative shift).}
+(negative shift). Applies to both BQQ-Posterior and BQQ-Z.}
 
 \item{whiten}{Logical (default TRUE). If TRUE, apply whitening (decorrelation via
 Cholesky decomposition of the posterior covariance) to gamma samples before
-computing posterior tail-area statistics. If FALSE, use raw gamma samples directly.}
+computing the BQQ-Posterior and BQQ-Z statistics. If FALSE, use raw gamma
+samples directly.}
 
 \item{seed}{Random seed (only used when generating new Laplace samples)}
 }
 \value{
-List with posterior-tail-based change-point detection results
+List with change-point detection results from two complementary
+  charting statistics: (i) BQQ-Posterior, the posterior tail-area test
+  (\code{pvalue_qj}, \code{adjp_*}, \code{significant_*}, \code{pvalue_posterior});
+  and (ii) BQQ-Z, the asymptotic Z-statistic test on the decorrelated samples
+  (\code{z_stat}, \code{pvalue_z_qj}, \code{adjp_z_*}, \code{significant_z_*},
+  \code{pvalue_z_block}). Both share the same multiple-testing correction
+  (jointly across the \eqn{m \times r} tests) and the same block-level
+  aggregation rule.
 }
 \description{
 Uses the H-matrix gamma coefficients directly for change-point detection.

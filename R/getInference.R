@@ -460,15 +460,24 @@ getEta <- function(fit_result, H = NULL, X = NULL, offset = NULL, n_samples = 10
 #' @param eta Predictive quantiles array (required only for signal_position = "max_deviation")
 #' @param n_samples Number of samples for Laplace approximation (only used for backward
 #'   compatibility when laplace_samples not available)
-#' @param alpha Significance level for the posterior tail-area decision rule
+#' @param alpha Significance level used for both the BQQ-Posterior tail-area
+#'   decision rule and the BQQ-Z asymptotic test.
 #' @param alternative Direction of the test: "two.sided" (default), "greater", or "less".
 #'   "greater" tests H1: gamma > 0 (positive shift). "less" tests H1: gamma < 0
-#'   (negative shift).
+#'   (negative shift). Applies to both BQQ-Posterior and BQQ-Z.
 #' @param whiten Logical (default TRUE). If TRUE, apply whitening (decorrelation via
 #'   Cholesky decomposition of the posterior covariance) to gamma samples before
-#'   computing posterior tail-area statistics. If FALSE, use raw gamma samples directly.
+#'   computing the BQQ-Posterior and BQQ-Z statistics. If FALSE, use raw gamma
+#'   samples directly.
 #' @param seed Random seed (only used when generating new Laplace samples)
-#' @return List with posterior-tail-based change-point detection results
+#' @return List with change-point detection results from two complementary
+#'   charting statistics: (i) BQQ-Posterior, the posterior tail-area test
+#'   (\code{pvalue_qj}, \code{adjp_*}, \code{significant_*}, \code{pvalue_posterior});
+#'   and (ii) BQQ-Z, the asymptotic Z-statistic test on the decorrelated samples
+#'   (\code{z_stat}, \code{pvalue_z_qj}, \code{adjp_z_*}, \code{significant_z_*},
+#'   \code{pvalue_z_block}). Both share the same multiple-testing correction
+#'   (jointly across the \eqn{m \times r} tests) and the same block-level
+#'   aggregation rule.
 #' @export
 detectChangepoints_gamma <- function(fit_result, taus, l, w,
                                      signal_position = c("first", "last", "middle", "max_deviation"),
@@ -638,6 +647,42 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
   # Per-block summary p-value: minimum across quantiles (for backward compat)
   pvalue_posterior <- apply(pvalue_qj, 2, min)
 
+  # ============================================================
+  # Step 4: Per-Quantile, Per-Block Frequentist Z-Test (BQQ-Z)
+  # ============================================================
+  # z_{q,j} = mean(gamma_tilde_{q,j}) / sd(gamma_tilde_{q,j})
+  z_stat <- matrix(NA, m, r)
+  for (q in 1:m) {
+    for (j in 1:r) {
+      gt_mean <- mean(gamma_tilde[, q, j])
+      gt_sd <- sd(gamma_tilde[, q, j])
+      z_stat[q, j] <- if (gt_sd > 1e-12) gt_mean / gt_sd else 0
+    }
+  }
+
+  # Z-test p-values (respecting 'alternative')
+  if (alternative == "two.sided") {
+    pvalue_z_qj <- 2 * (1 - pnorm(abs(z_stat)))
+  } else if (alternative == "greater") {
+    pvalue_z_qj <- 1 - pnorm(z_stat)
+  } else if (alternative == "less") {
+    pvalue_z_qj <- pnorm(z_stat)
+  }
+
+  # Multiple testing corrections for Z-test
+  pvalue_z_vec <- as.vector(pvalue_z_qj)
+  adjp_z_holm <- matrix(p.adjust(pvalue_z_vec, method = "holm"), m, r)
+  adjp_z_bonf <- matrix(p.adjust(pvalue_z_vec, method = "bonferroni"), m, r)
+  adjp_z_bh <- matrix(p.adjust(pvalue_z_vec, method = "BH"), m, r)
+
+  # Block-level decisions for Z-test
+  significant_z_holm <- which(apply(adjp_z_holm < alpha, 2, any))
+  significant_z_bonf <- which(apply(adjp_z_bonf < alpha, 2, any))
+  significant_z_bh <- which(apply(adjp_z_bh < alpha, 2, any))
+
+  # Per-block summary p-value for Z-test
+  pvalue_z_block <- apply(pvalue_z_qj, 2, min)
+
   # Convert H column to observation number.
   # For combined designs (e.g., sustained + isolated + drift), H has multiple
   # column groups sharing the same time blocks. Map h_col back to the actual
@@ -702,11 +747,16 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
     h_col = 1:r,
     # Block-level summary p-value (min across quantiles)
     pvalue_posterior = pvalue_posterior,
+    pvalue_z = pvalue_z_block,
     # Block-level significance flags — BQQ-Posterior (after joint m*r correction)
     significant_raw = 1:r %in% sig_blocks_raw,
     significant_holm = 1:r %in% significant_holm,
     significant_bonf = 1:r %in% significant_bonf,
-    significant_bh = 1:r %in% significant_bh
+    significant_bh = 1:r %in% significant_bh,
+    # Block-level significance flags — BQQ-Z (after joint m*r correction)
+    significant_z_holm = 1:r %in% significant_z_holm,
+    significant_z_bonf = 1:r %in% significant_z_bonf,
+    significant_z_bh = 1:r %in% significant_z_bh
   )
 
   # Add observation ranges
@@ -734,6 +784,19 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
     detected_blocks$signal_obs[first_sig_block]
   } else NA
 
+  # First detection — BQQ-Z
+  first_signal_z_holm <- if (length(significant_z_holm) > 0) {
+    detected_blocks$signal_obs[min(significant_z_holm)]
+  } else NA
+
+  first_signal_z_bonf <- if (length(significant_z_bonf) > 0) {
+    detected_blocks$signal_obs[min(significant_z_bonf)]
+  } else NA
+
+  first_signal_z_bh <- if (length(significant_z_bh) > 0) {
+    detected_blocks$signal_obs[min(significant_z_bh)]
+  } else NA
+
   list(
     detected_blocks = detected_blocks,
     # Decorrelated gamma samples (n_iter x m x r)
@@ -744,6 +807,12 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
     adjp_holm = adjp_holm,
     adjp_bonf = adjp_bonf,
     adjp_bh = adjp_bh,
+    # BQQ-Z: per-quantile, per-block Z-statistics and p-value matrices (m x r)
+    z_stat = z_stat,
+    pvalue_z_qj = pvalue_z_qj,
+    adjp_z_holm = adjp_z_holm,
+    adjp_z_bonf = adjp_z_bonf,
+    adjp_z_bh = adjp_z_bh,
     # Per-quantile null threshold
     epsilon = epsilon,
     # Whitening matrix used for decorrelation
@@ -758,6 +827,14 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
     first_signal_holm = first_signal_holm,
     first_signal_bonf = first_signal_bonf,
     first_signal_bh = first_signal_bh,
+    # Block-level summary — BQQ-Z
+    pvalue_z_block = pvalue_z_block,
+    n_significant_z_holm = length(significant_z_holm),
+    n_significant_z_bonf = length(significant_z_bonf),
+    n_significant_z_bh = length(significant_z_bh),
+    first_signal_z_holm = first_signal_z_holm,
+    first_signal_z_bonf = first_signal_z_bonf,
+    first_signal_z_bh = first_signal_z_bh,
     # Configuration
     signal_position = signal_position,
     alternative = alternative,
