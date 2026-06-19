@@ -607,6 +607,7 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
   adjp_z_bh <- matrix(p.adjust(pvalue_z_vec, method = "BH"), m, r)
 
   # Block-level decisions for Z-test
+  significant_z_raw  <- which(apply(pvalue_z_qj < alpha, 2, any))  # no correction (mirrors significant_raw)
   significant_z_holm <- which(apply(adjp_z_holm < alpha, 2, any))
   significant_z_bonf <- which(apply(adjp_z_bonf < alpha, 2, any))
   significant_z_bh <- which(apply(adjp_z_bh < alpha, 2, any))
@@ -710,7 +711,8 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
     significant_holm = 1:r %in% significant_holm,
     significant_bonf = 1:r %in% significant_bonf,
     significant_bh = 1:r %in% significant_bh,
-    # Block-level significance flags — BQQ-Z (after joint m*r correction)
+    # Block-level significance flags — BQQ-Z (raw, then joint m*r corrections)
+    significant_z_raw = 1:r %in% significant_z_raw,
     significant_z_holm = 1:r %in% significant_z_holm,
     significant_z_bonf = 1:r %in% significant_z_bonf,
     significant_z_bh = 1:r %in% significant_z_bh
