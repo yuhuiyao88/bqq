@@ -6,7 +6,7 @@
 #' Smoothed Quantile Regression with Interquantile Shrinkage (Stan)
 #'
 #' Fits a multi-quantile (\eqn{m}) regression model where the conditional
-#' quantile function is modeled as a latent random walk in time (or index)
+#' quantile function is modeled with a per-quantile intercept (in time or index)
 #' with optional fixed effects \eqn{X} and structured effects \eqn{H}.
 #' The \eqn{H}-coefficients are shrunk via **Bayesian LASSO-type priors**
 #' (group, elementwise, heterogeneous-group, or adaptive), and adjacent quantiles
@@ -20,8 +20,8 @@
 #'     \itemize{
 #'       \item \eqn{y_i} is optionally jittered (\code{u ~ Beta(1,1)}) and/or log-transformed.
 #'       \item Combined linear predictor
-#'       \eqn{\eta_{qi} = \mu_{q,i} + \beta_{0,q} + x_i^\top \beta_{X,q} + h_i^\top \gamma_q + \mathrm{offset}_i}.
-#'       \item \eqn{\mu_{q,\cdot}} is a random walk per quantile: \eqn{\mu_{q,t} = \mu_{q,t-1} + \tau^{(rw)}_q z_{q,t-1}}.
+#'       \eqn{\eta_{qi} = \beta_{0,q} + x_i^\top \beta_{X,q} + h_i^\top \gamma_q + \mathrm{offset}_i}.
+#'       \item \eqn{\beta_{0,q}} is a per-quantile intercept with an informative prior centered at the warm-up-window quantiles.
 #'     }
 #'   }
 #'   \item{Interquantile shrinkage}{
@@ -33,8 +33,7 @@
 #'     (Jiang, Wang, & Bondell 2013).
 #'     Weights are applied separately to gamma and beta slopes.
 #'     Falls back to uniform weights (all 1) when \pkg{quantreg} is not available.
-#'     Note: Intercept is NOT penalized (per Jiang, Wang, & Bondell 2013).
-#'     Note: mu (random walk) is NOT penalized to allow quantile-specific temporal evolution.
+#'     Note: Intercept (beta0) is NOT penalized (per Jiang, Wang, & Bondell 2013).
 #'   }
 #'   \item{Non-crossing penalty}{
 #'     Adds an L1 hinge on the finite-difference derivative in \eqn{\tau},
@@ -56,8 +55,13 @@
 #' @param eps_w Positive scalar added to pilot estimates for numerical stability
 #'   in the IQ shrinkage weights (default 1e-6).
 #' @param c_sigma Positive scalar scaling factor for the base scale (default 1.0).
-#' @param beta0_sd Positive scalar prior std dev for the intercept coefficients
-#'   \code{beta0} (default 1.0).
+#' @param base_scale Optional positive scalar robust scale; defaults to
+#'   \code{1.4826 * mad(y)}. Sets the smoothing temperature
+#'   (\code{smooth_T = base_scale * eps_rel}) and the default \code{beta0_scale}.
+#' @param beta0_scale Prior std dev for the per-quantile intercept \code{beta0};
+#'   a positive scalar (recycled) or length-\code{m} vector, defaulting to
+#'   \code{base_scale} per quantile. The prior is
+#'   \code{beta0[q] ~ Normal(quantile(y[1:w], tau_q), beta0_scale[q])}.
 #' @param beta_sd Positive scalar prior std dev for \code{betaX} coefficients under
 #'   \code{prior_beta = "normal"} (default 1.0).
 #' @param lambda_nc Positive scalar weight for the non-crossing penalty (larger is stricter).
@@ -112,8 +116,8 @@
 #' @param laplace_noise_scale Scale factor for parameter perturbation in Laplacian approximation.
 #' @param prior_beta Prior type for \code{betaX}: \code{"normal"}, \code{"lasso"},
 #'   \code{"spike_slab"}, \code{"group_lasso"}, \code{"het_group_lasso"}, or
-#'   \code{"adaptive_lasso"}. The intercept \code{beta0} always retains the weakly
-#'   informative normal prior specified by \code{beta0_sd}.
+#'   \code{"adaptive_lasso"}. The intercept \code{beta0} always retains its own
+#'   normal prior \code{beta0[q] ~ Normal(quantile(y[1:w], tau_q), beta0_scale[q])}.
 #' @param prior_gamma Prior type for gamma: \code{"group_lasso"}, \code{"lasso"},
 #'   \code{"spike_slab"}, \code{"het_group_lasso"}, or \code{"adaptive_lasso"}.
 #'   The \code{"adaptive_lasso"} option follows a Leng et al. (2014)-style hierarchy
@@ -161,7 +165,7 @@
 
 getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
                         alpha = 0.75, eps_w = 1e-6, c_sigma = 1.0,
-                        beta0_sd = 1.0, beta_sd = 1.0,
+                        base_scale = NULL, beta0_scale = NULL, beta_sd = 1.0,
                         lambda_nc = 2, eps_rel = 0.1,
                         adaptive_iq = TRUE,
                         lambda_iq2_a = 1, lambda_iq2_b = 0.1,
@@ -264,11 +268,11 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
       vector[n] y;
       vector[n] offset;
       vector[m] tau_q;
-      vector[m] mu0_init;
+      vector[m] beta0_loc;
+      vector<lower=0>[m] beta0_scale;
 
       real<lower=1e-12> base_scale;
       real<lower=0>      c_sigma;
-      real<lower=0>      beta0_sd;
       real<lower=0>      beta_sd;
 
       real<lower=0> lambda_nc;         // non-crossing penalty weight
@@ -367,11 +371,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
   }
 
   parameters {
-      // Random-walk increments (non-centered)
-      // z_incr and tau_rw removed: mu[q,t] = mu[q,t-1] = mu0[q]
-      vector[m]       mu0;
-
-      // Intercept and user X-coefficients
+      // Per-quantile intercept and user X-coefficients
       vector[m] beta0;
       matrix[m, px] betaX;
 
@@ -421,13 +421,8 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
   }
 
   transformed parameters {
-      // RW paths
-      matrix[m, n] mu;
       matrix[m, px + 1] beta;
       for (q in 1:m) {
-        mu[q,1] = mu0[q];
-        for (t in 2:n)
-          mu[q,t] = mu[q,t-1];
         beta[q, 1] = beta0[q];
         if (px > 0) {
           for (j in 1:px)
@@ -457,11 +452,8 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
       // jitter prior
       u ~ beta(1, 1);
 
-      // mu0 prior (no random walk innovation)
-      mu0 ~ normal(mu0_init, 2 * base_scale);
-
-      // beta0 prior (intercept only)
-      beta0 ~ normal(0, beta0_sd);
+      // beta0 prior (per-quantile intercept; informative warm-up-window prior)
+      beta0 ~ normal(beta0_loc, beta0_scale);
 
       // betaX prior (user covariates only)
       if (px > 0) {
@@ -552,7 +544,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
               real xb = dot_product(to_vector(row(X_design, i)), to_vector(beta[q]));
               real hb = (r > 0) ? dot_product(to_vector(row(H, i)), to_vector(gamma[q])) : 0;
 
-              real eta = mu[q, i] + xb + hb + offset[i];
+              real eta = xb + hb + offset[i];
               real r_i = y_eff[i] - eta;
 
               real z  = fmin(20, fmax(-20, -r_i / smooth_T));
@@ -655,7 +647,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
           for (q in 1:m) {
             real xb = dot_product(to_vector(row(X_design, i)), to_vector(beta[q]));
             real hb = (r > 0) ? dot_product(to_vector(row(H, i)), to_vector(gamma[q])) : 0;
-            eta_row[q] = mu[q, i] + xb + hb + offset[i];
+            eta_row[q] = xb + hb + offset[i];
           }
 
           // Non-crossing penalty: penalize negative derivatives
@@ -671,7 +663,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
 
       // ---- Interquantile (fused lasso) shrinkage penalty ----
       // Penalizes |coef[q] - coef[q-1]| with IQ weights (more shrinkage at outer quantiles)
-      // Applied to gamma and beta (NOT mu, as random walk should track quantile-specific evolution)
+      // Applied to gamma and betaX slopes (NOT the intercept beta0)
       {
         // Determine effective lambda_iq^2 value, then take sqrt for the penalty
         real lambda_iq2_eff;
@@ -713,8 +705,6 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
             pen_iq_beta /= (p_slope * (m - 1));
             n_components += 1;
           }
-
-          // Note: mu (random walk) is NOT penalized to allow quantile-specific evolution
 
           // Average across components
           if (n_components > 0) {
@@ -762,14 +752,27 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
     }
   }
 
-  # Base scale for smoothing (robust)
-  base_scale <- max(1e-8, 1.4826 * stats::mad(y))
+  # Base scale for smoothing (robust); overridable via the base_scale argument
+  if (is.null(base_scale)) {
+    base_scale <- max(1e-8, 1.4826 * stats::mad(y))
+  }
 
-  # Initial mu0 by quantiles
+  # beta0 prior location: per-quantile level of the warm-up window
   if (w > 0) {
-    mu0_init <- stats::quantile(y[1:w], probs = taus)
+    beta0_loc <- stats::quantile(y[1:w], probs = taus)
   } else {
-    mu0_init <- stats::quantile(y, probs = taus)
+    beta0_loc <- stats::quantile(y, probs = taus)
+  }
+  beta0_loc <- as.vector(beta0_loc)
+
+  # beta0 prior scale: defaults to base_scale per quantile; accepts scalar or length-m vector
+  if (is.null(beta0_scale)) {
+    beta0_scale <- rep(base_scale, m)
+  } else if (length(beta0_scale) == 1L) {
+    beta0_scale <- rep(beta0_scale, m)
+  }
+  if (length(beta0_scale) != m || any(beta0_scale <= 0)) {
+    stop("beta0_scale must be a positive scalar or a length-m positive vector.")
   }
 
   # ---- IQ weight matrices construction (data-driven adaptive weights) ----
@@ -818,8 +821,8 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
     n = n, px = px, m = m, r = r,
     X = X, H = H,
     y = y, offset = offset, tau_q = taus,
-    mu0_init = as.vector(mu0_init),
-    base_scale = base_scale, c_sigma = c_sigma, beta0_sd = beta0_sd, beta_sd = beta_sd,
+    beta0_loc = beta0_loc, beta0_scale = beta0_scale,
+    base_scale = base_scale, c_sigma = c_sigma, beta_sd = beta_sd,
     lambda_nc = lambda_nc, eps_rel = eps_rel,
     lambda_iq2_a = lambda_iq2_a, lambda_iq2_b = lambda_iq2_b,
     adaptive_iq = as.integer(adaptive_iq),
@@ -878,17 +881,10 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
     arr
   }
 
-  # Helper function to generate Laplace approximation samples from MAP
-  #
-  # The Hessian from rstan::optimizing() is on the UNCONSTRAINED parameter scale
-  # and has dimensions k x k where k = number of raw parameters (NOT including
-
-  # transformed parameters). par_map includes both raw + transformed parameters,
-  # so length(par_map) > k.
-  #
-  # mu is a TRANSFORMED parameter (mu[q,t] = mu[q,t-1], mu[q,1] = mu0[q]).
-  # Since mu[q,t] = mu0[q] for all t, we sample mu0 from the Hessian
-  # and replicate across time points.
+  # Helper: generate Laplace-approximation samples from the MAP fit. The Hessian
+  # from rstan::optimizing() is on the UNCONSTRAINED scale (k x k, raw parameters
+  # only). The eta-relevant parameters are the intercept beta0, user slopes betaX,
+  # and the change-point effects gamma; the baseline lives entirely in beta0.
   generate_laplace_samples <- function(par_map, hessian, n_samples, noise_scale, seed_val) {
     if (!is.null(seed_val)) set.seed(seed_val)
 
@@ -902,54 +898,31 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
     k <- if (!is.null(hessian)) nrow(hessian) else 0
     raw_par_names <- if (k > 0) names(par_map)[1:k] else character(0)
 
-    # Indices within raw parameters for the components we need for eta
-    z_incr_idx <- grep("^z_incr\\[", raw_par_names)
-    tau_rw_idx <- grep("^tau_rw",    raw_par_names)
-    mu0_idx    <- grep("^mu0\\[",    raw_par_names)
+    # Indices within raw parameters for the eta-relevant components
     beta0_idx  <- grep("^beta0\\[",  raw_par_names)
     betaX_idx  <- grep("^betaX\\[",  raw_par_names)
     gamma_idx  <- grep("^gamma\\[",  raw_par_names)
-    eta_param_idx <- c(z_incr_idx, tau_rw_idx, mu0_idx, beta0_idx, betaX_idx, gamma_idx)
-
-    # Also find mu (transformed parameter) indices for the heuristic fallback
-    mu_tp_idx <- grep("^mu\\[", par_names)
+    eta_param_idx <- c(beta0_idx, betaX_idx, gamma_idx)
 
     # Parse dimensions from parameter names
-    z_incr_parsed <- if (length(z_incr_idx) > 0) parse_2d_idx(raw_par_names, z_incr_idx, "z_incr") else NULL
-    mu0_parsed    <- if (length(mu0_idx) > 0) {
-      # mu0 is a vector: mu0[1], mu0[2], ... - parse as 1D
-      dims_str <- gsub("mu0\\[|\\]", "", raw_par_names[mu0_idx])
-      list(idx = as.integer(dims_str))
-    } else NULL
-    tau_rw_parsed <- if (length(tau_rw_idx) > 0) {
-      dims_str <- gsub("tau_rw\\[|\\]", "", raw_par_names[tau_rw_idx])
-      list(idx = as.integer(dims_str))
-    } else NULL
     beta0_parsed  <- if (length(beta0_idx) > 0) {
-      dims_str <- gsub("beta0\\[|\\]", "", raw_par_names[beta0_idx])
-      list(idx = as.integer(dims_str))
+      list(idx = as.integer(gsub("beta0\\[|\\]", "", raw_par_names[beta0_idx])))
     } else NULL
     betaX_parsed  <- if (length(betaX_idx) > 0) parse_2d_idx(raw_par_names, betaX_idx, "betaX") else NULL
     gamma_parsed  <- if (length(gamma_idx) > 0) parse_2d_idx(raw_par_names, gamma_idx, "gamma") else NULL
-    mu_tp_parsed  <- if (length(mu_tp_idx) > 0) parse_2d_idx(par_names, mu_tp_idx, "mu") else NULL
 
     # --- Try proper Hessian-based Laplace approximation ---
     laplace_ok <- FALSE
-    mu_array <- NULL
     beta_array <- NULL
     gamma_array <- NULL
 
     if (!is.null(hessian) && k > 0 && length(eta_param_idx) > 0) {
       laplace_result <- tryCatch({
 
-        # Build unconstrained mean vector for the full raw parameter space
-        # par_map[1:k] is on constrained scale; Hessian is on unconstrained scale
-        # For tau_rw (<lower=0>): unconstrained = log(constrained)
-        # For z_incr, mu0, beta, gamma (no bounds): unconstrained = constrained
+        # Build unconstrained mean vector. beta0/betaX/gamma are unbounded;
+        # lower-bounded scale params are log-transformed below for correct inversion.
         theta_unc_full <- as.numeric(par_map[1:k])
-        theta_unc_full[tau_rw_idx] <- log(pmax(par_map[tau_rw_idx], 1e-10))
 
-        # Also transform other constrained params for correct Hessian inversion:
         # sigma2_beta_group (<lower=0>): log
         tbg_idx <- grep("^sigma2_beta_group", raw_par_names)
         if (length(tbg_idx) > 0) theta_unc_full[tbg_idx] <- log(pmax(par_map[tbg_idx], 1e-10))
@@ -1005,34 +978,10 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
         z_mat <- matrix(rnorm(n_samples * length(eta_param_idx)), n_samples, length(eta_param_idx))
         samples_unc <- sweep(z_mat %*% L, 2, theta_unc_sub, "+")
 
-        # --- Map columns back to parameter blocks ---
-        # Column offsets within samples_unc (follows the order of eta_param_idx)
-        z_incr_cols <- seq_along(z_incr_idx)
-        tau_rw_cols <- length(z_incr_idx) + seq_along(tau_rw_idx)
-        mu0_cols    <- length(z_incr_idx) + length(tau_rw_idx) + seq_along(mu0_idx)
-        beta0_cols  <- length(z_incr_idx) + length(tau_rw_idx) + length(mu0_idx) + seq_along(beta0_idx)
-        betaX_cols  <- length(z_incr_idx) + length(tau_rw_idx) + length(mu0_idx) + length(beta0_idx) + seq_along(betaX_idx)
-        gamma_cols  <- length(z_incr_idx) + length(tau_rw_idx) + length(mu0_idx) + length(beta0_idx) + length(betaX_idx) + seq_along(gamma_idx)
-
-        # --- Reconstruct mu from mu0 (mu[q,t] = mu0[q] for all t) ---
-        m_q <- max(mu0_parsed$idx)
-        # Get n_time from transformed mu parameter in par_map
-        n_time <- if (!is.null(mu_tp_parsed)) max(mu_tp_parsed$col) else 1
-
-        mu_arr <- array(NA, dim = c(n_samples, m_q, n_time))
-
-        for (s in 1:n_samples) {
-          # Extract mu0
-          mu0_s <- numeric(m_q)
-          for (i in seq_along(mu0_parsed$idx)) {
-            mu0_s[mu0_parsed$idx[i]] <- samples_unc[s, mu0_cols[i]]
-          }
-
-          # mu[q,t] = mu0[q] for all t (no random walk)
-          for (q in 1:m_q) {
-            mu_arr[s, q, ] <- mu0_s[q]
-          }
-        }
+        # --- Map columns back to parameter blocks (order of eta_param_idx) ---
+        beta0_cols  <- seq_along(beta0_idx)
+        betaX_cols  <- length(beta0_idx) + seq_along(betaX_idx)
+        gamma_cols  <- length(beta0_idx) + length(betaX_idx) + seq_along(gamma_idx)
 
         # --- Assemble beta and gamma arrays ---
         beta_arr <- if (length(beta0_idx) > 0 || length(betaX_idx) > 0) {
@@ -1062,7 +1011,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
                            max(gamma_parsed$row), max(gamma_parsed$col), n_samples)
         } else NULL
 
-        list(mu = mu_arr, beta = beta_arr, gamma = gamma_arr)
+        list(beta = beta_arr, gamma = gamma_arr)
 
       }, error = function(e) {
         warning("Hessian-based Laplace failed: ", conditionMessage(e),
@@ -1071,7 +1020,6 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
       })
 
       if (!is.null(laplace_result)) {
-        mu_array <- laplace_result$mu
         beta_array <- laplace_result$beta
         gamma_array <- laplace_result$gamma
         laplace_ok <- TRUE
@@ -1080,21 +1028,6 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
 
     # --- Fallback: heuristic noise (when Hessian is unavailable or inversion fails) ---
     if (!laplace_ok) {
-
-      mu_array <- if (length(mu_tp_idx) > 0) {
-        m_mu <- max(mu_tp_parsed$row); n_mu <- max(mu_tp_parsed$col)
-        mu_map <- matrix(NA, m_mu, n_mu)
-        for (i in seq_along(mu_tp_idx)) mu_map[mu_tp_parsed$row[i], mu_tp_parsed$col[i]] <- par_map[mu_tp_idx[i]]
-        mu_sd <- matrix(NA, m_mu, n_mu)
-        for (q in 1:m_mu) {
-          d_sd <- sd(diff(mu_map[q, ]), na.rm = TRUE)
-          if (is.na(d_sd) || d_sd < 1e-6) d_sd <- 0.1
-          mu_sd[q, ] <- d_sd * noise_scale
-        }
-        arr <- array(NA, dim = c(n_samples, m_mu, n_mu))
-        for (s in 1:n_samples) arr[s, , ] <- mu_map + matrix(rnorm(m_mu * n_mu, 0, mu_sd), m_mu, n_mu)
-        arr
-      }
 
       beta_full_idx <- grep("^beta\\[", par_names)
       beta_array <- if (length(beta_full_idx) > 0) {
@@ -1121,7 +1054,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
       }
     }
 
-    list(mu = mu_array, beta = beta_array, gamma = gamma_array)
+    list(mu = NULL, beta = beta_array, gamma = gamma_array)
   }
 
   # ------------------------------------------------------------------
@@ -1135,9 +1068,8 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
     )
 
     # Extract posterior median as point estimates
-    draws <- rstan::extract(fit, pars = c("mu", "beta", "gamma"))
+    draws <- rstan::extract(fit, pars = c("beta", "gamma"))
     map_fit <- list(par = list())
-    map_fit$par$mu <- apply(draws$mu, c(2, 3), median)
     if (!is.null(draws$beta)) map_fit$par$beta <- apply(draws$beta, c(2, 3), median)
     if (!is.null(draws$gamma)) map_fit$par$gamma <- apply(draws$gamma, c(2, 3), median)
     map_fit$estimator <- "posterior_median"
