@@ -386,8 +386,9 @@ getEta <- function(fit_result, H = NULL, X = NULL, offset = NULL, n_samples = 10
 #'   - "last": Last observation in the block
 #'   - "middle": Middle observation in the block
 #'   - "max_deviation": Observation with maximum deviation from the predictive median (fitted eta at tau = 0.5)
-#' @param y Original data (required only for signal_position = "max_deviation")
-#' @param eta Predictive quantiles array (required only for signal_position = "max_deviation")
+#'   - "pinball": Observation that splits the block to minimize the equally weighted pinball (check) loss between the pre-block and block fitted quantile vectors (the same loss used for cross-validation)
+#' @param y Original data (required for signal_position = "max_deviation" or "pinball")
+#' @param eta Predictive quantiles array (required for signal_position = "max_deviation" or "pinball")
 #' @param n_samples Number of samples for Laplace approximation (only used for backward
 #'   compatibility when laplace_samples not available)
 #' @param alpha Significance level used for both the BQQ-Posterior tail-area
@@ -410,7 +411,7 @@ getEta <- function(fit_result, H = NULL, X = NULL, offset = NULL, n_samples = 10
 #'   aggregation rule.
 #' @export
 detectChangepoints_gamma <- function(fit_result, taus, l, w,
-                                     signal_position = c("first", "last", "middle", "max_deviation"),
+                                     signal_position = c("first", "last", "middle", "max_deviation", "pinball"),
                                      y = NULL, eta = NULL,
                                      n_samples = 1000, alpha = 0.05,
                                      alternative = "two.sided",
@@ -669,6 +670,32 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
       # Return observation with maximum deviation
       max_dev_idx <- which.max(deviations)
       return(block_obs[max_dev_idx])
+
+    } else if (position_method == "pinball") {
+      # Refine the change time within the block by minimizing the equally
+      # weighted pinball (check) loss: assign the pre-block fitted quantile
+      # vector to observations before the split and the block's fitted quantile
+      # vector at/after it, then pick the split with the lowest loss (the same
+      # check loss used by cv_copss).
+      if (is.null(y_data) || is.null(eta_data) || is.null(tau_levels)) {
+        warning("y, eta, and taus required for pinball; using 'first' instead")
+        return(obs_start)
+      }
+      if (obs_start < 2) return(obs_start)
+      qhat <- apply(eta_data, c(2, 3), mean)            # posterior-mean fitted quantiles (m x n)
+      pre <- qhat[, obs_start - 1]; post <- qhat[, obs_start]
+      block_obs <- obs_start:obs_end
+      best_c <- obs_start; best_L <- Inf
+      for (cc in block_obs) {
+        L <- 0
+        for (q in seq_along(tau_levels)) {
+          qh <- ifelse(block_obs < cc, pre[q], post[q])
+          u <- y_data[block_obs] - qh
+          L <- L + sum(u * (tau_levels[q] - (u < 0)))
+        }
+        if (L < best_L) { best_L <- L; best_c <- cc }
+      }
+      return(best_c)
     }
   }
 

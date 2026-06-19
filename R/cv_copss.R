@@ -94,6 +94,13 @@ cv_copss_map <- function(y, taus, H, X = NULL, w,
         verbose = FALSE
       )
     }, error = function(e) {
+      # A wall-clock / CPU time-limit hit (from setTimeLimit in a caller) must
+      # abort the whole CV rather than be silently downgraded to a skipped grid
+      # point: the caller treats a timeout as an invalid run and redoes the
+      # simulation from fresh data. Genuine numerical fit failures are still
+      # tolerated (skip this grid point and continue).
+      if (grepl("reached elapsed time limit|reached CPU time limit",
+                conditionMessage(e))) stop(e)
       warning("Model fitting failed: ", e$message)
       return(NULL)
     })
@@ -266,6 +273,13 @@ cv_copss_grid <- function(y, taus, H, X = NULL, w, grid,
     fit <- tryCatch({
       do.call(getModel, full_args)
     }, error = function(e) {
+      # A wall-clock / CPU time-limit hit (from setTimeLimit in a caller) must
+      # abort the whole CV rather than be silently downgraded to a skipped grid
+      # point: the caller treats a timeout as an invalid run and redoes the
+      # simulation from fresh data. Genuine numerical fit failures are still
+      # tolerated (skip this grid point and continue).
+      if (grepl("reached elapsed time limit|reached CPU time limit",
+                conditionMessage(e))) stop(e)
       warning("Model fitting failed: ", e$message)
       return(NULL)
     })
