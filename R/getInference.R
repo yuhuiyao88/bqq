@@ -620,7 +620,11 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
   # column groups sharing the same time blocks. Map h_col back to the actual
   # time block using modular arithmetic so observation indices stay within [1, n].
   n_data <- if (!is.null(y)) length(y) else NULL
-  r_per_type <- if (!is.null(n_data)) floor((n_data - w) / l) else r
+  # blocks per design type, matching the design-matrix column count
+  # (ceil((n-w)/l), as in getSustainedShift/Isolated/GradualDrift). Using floor
+  # here previously wrapped the final block (h_col = r) back onto block 1 when
+  # (n-w) was not a multiple of l, mislocating that block's signal observation.
+  r_per_type <- if (!is.null(n_data)) as.integer((n_data - w) / l) + as.numeric((((n_data - w) %% l) > 0)) else r
 
   h_to_obs <- function(h_col) {
     # Map H column to actual time block (handles combined design)
