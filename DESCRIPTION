@@ -1,7 +1,7 @@
 Package: bqq
 Type: Package
 Title: Bayesian Quintuple Quantile Chart
-Version: 0.3.5
+Version: 0.3.6
 Authors@R: c(
     person(
       "Yuhui", "Yao",
@@ -23,5 +23,6 @@ Imports:
     rstan (>= 2.21.0),
     stats
 Suggests:
+    ggplot2,
     quantreg
 RoxygenNote: 7.3.3
