@@ -959,10 +959,14 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
           theta_unc_full[u_idx] <- log(uv / (1 - uv))
         }
 
-        # Invert full Hessian to get posterior covariance on unconstrained scale
+        # Invert full Hessian to get posterior covariance on unconstrained scale.
+        # Moore-Penrose pseudo-inverse is robust to the zero-curvature directions
+        # of unused-prior scale latents (their flat Hessian rows otherwise make
+        # solve() report a computationally singular system). eta is decoupled from
+        # those latents, so its submatrix below is the exact marginal covariance.
         H_neg <- -(hessian + t(hessian)) / 2  # ensure symmetry
         H_neg_reg <- H_neg + diag(1e-6, k)
-        Sigma_full <- solve(H_neg_reg)
+        Sigma_full <- MASS::ginv(H_neg_reg)
 
         # Extract marginal covariance for the eta-related parameters
         Sigma_sub <- Sigma_full[eta_param_idx, eta_param_idx]

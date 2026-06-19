@@ -103,7 +103,10 @@ getLaplaceSamples <- function(map_fit, hessian = NULL, n_samples = 1000,
 
       H_neg <- -(hessian + t(hessian)) / 2
       H_neg_reg <- H_neg + diag(1e-6, k)
-      Sigma_full <- solve(H_neg_reg)
+      # Moore-Penrose pseudo-inverse: robust to the flat (zero-curvature)
+      # directions of unused-prior scale latents, which make solve() report a
+      # singular system. eta is decoupled from them, so its submatrix is exact.
+      Sigma_full <- MASS::ginv(H_neg_reg)
       Sigma_unc <- Sigma_full[eta_param_idx, eta_param_idx, drop = FALSE]
       eig <- eigen(Sigma_unc, symmetric = TRUE)
       eig$values <- pmax(eig$values, 1e-8)
