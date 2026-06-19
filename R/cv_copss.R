@@ -119,7 +119,6 @@ cv_copss_map <- function(y, taus, H, X = NULL, w,
     # Extract parameters
     beta_vec <- par[grep("^beta\\[", names(par))]
     gamma_vec <- par[grep("^gamma\\[", names(par))]
-    mu0_vec <- par[grep("^mu0\\[", names(par))]
 
     # Handle empty parameters
     if (length(beta_vec) == 0) beta_vec <- rep(0, m * p)
@@ -127,17 +126,15 @@ cv_copss_map <- function(y, taus, H, X = NULL, w,
 
     beta <- matrix(beta_vec, m, p, byrow = FALSE)
     gamma <- if (r > 0) matrix(gamma_vec, m, r, byrow = FALSE) else matrix(0, m, 0)
-    mu0 <- as.numeric(mu0_vec)  # length m
 
-    # Training predictions: mu0[q] + X*beta[q,] + H*gamma[q,]
+    # Training predictions: X*beta[q,] (incl. intercept) + H*gamma[q,]
     eta_tr <- matrix(0, nrow = length(idx_train), ncol = m)
     for (j in seq_len(m)) {
-      eta_tr[, j] <- mu0[j] +
-        as.numeric(X_tr_design %*% beta[j, ]) +
+      eta_tr[, j] <- as.numeric(X_tr_design %*% beta[j, ]) +
         if (r > 0) as.numeric(H_tr %*% gamma[j, ]) else 0
     }
 
-    # Validation predictions: mu0[q] + X*beta[q,] + H*gamma[q,]
+    # Validation predictions: X*beta[q,] (incl. intercept) + H*gamma[q,]
     X_val_raw <- if (is.null(X)) NULL else as.matrix(X[idx_val, , drop = FALSE])
     X_val <- {
       X0 <- matrix(1, nrow = length(idx_val), ncol = 1)
@@ -150,8 +147,7 @@ cv_copss_map <- function(y, taus, H, X = NULL, w,
 
     eta_val <- matrix(0, n_val, m)
     for (j in seq_len(m)) {
-      eta_val[, j] <- mu0[j] +
-        as.numeric(X_val %*% beta[j, ]) +
+      eta_val[, j] <- as.numeric(X_val %*% beta[j, ]) +
         if (r > 0) as.numeric(H_val %*% gamma[j, ]) else 0
     }
 
@@ -295,24 +291,21 @@ cv_copss_grid <- function(y, taus, H, X = NULL, w, grid,
 
     beta_vec <- par[grep("^beta\\[", names(par))]
     gamma_vec <- par[grep("^gamma\\[", names(par))]
-    mu0_vec <- par[grep("^mu0\\[", names(par))]
 
     if (length(beta_vec) == 0) beta_vec <- rep(0, m * p)
     if (length(gamma_vec) == 0) gamma_vec <- rep(0, m * r)
 
     beta <- matrix(beta_vec, m, p, byrow = FALSE)
     gamma <- if (r > 0) matrix(gamma_vec, m, r, byrow = FALSE) else matrix(0, m, 0)
-    mu0 <- as.numeric(mu0_vec)  # length m
 
-    # Training predictions: mu0[q] + X*beta[q,] + H*gamma[q,]
+    # Training predictions: X*beta[q,] (incl. intercept) + H*gamma[q,]
     eta_tr <- matrix(0, nrow = length(idx_train), ncol = m)
     for (j in seq_len(m)) {
-      eta_tr[, j] <- mu0[j] +
-        as.numeric(X_tr_design %*% beta[j, ]) +
+      eta_tr[, j] <- as.numeric(X_tr_design %*% beta[j, ]) +
         if (r > 0) as.numeric(H_tr %*% gamma[j, ]) else 0
     }
 
-    # Validation predictions: mu0[q] + X*beta[q,] + H*gamma[q,]
+    # Validation predictions: X*beta[q,] (incl. intercept) + H*gamma[q,]
     X_val_raw <- if (is.null(X)) NULL else as.matrix(X[idx_val, , drop = FALSE])
     X_val <- {
       X0 <- matrix(1, nrow = length(idx_val), ncol = 1)
@@ -325,8 +318,7 @@ cv_copss_grid <- function(y, taus, H, X = NULL, w, grid,
 
     eta_val <- matrix(0, n_val, m)
     for (j in seq_len(m)) {
-      eta_val[, j] <- mu0[j] +
-        as.numeric(X_val %*% beta[j, ]) +
+      eta_val[, j] <- as.numeric(X_val %*% beta[j, ]) +
         if (r > 0) as.numeric(H_val %*% gamma[j, ]) else 0
     }
 
@@ -477,21 +469,17 @@ cv_copss_mcmc <- function(y, taus, H, X = NULL, w, grid,
     # Get posterior means from draws
     beta_vars <- grep("^beta\\[", colnames(draws), value = TRUE)
     gamma_vars <- grep("^gamma\\[", colnames(draws), value = TRUE)
-    mu0_vars <- grep("^mu0\\[", colnames(draws), value = TRUE)
 
     beta_vec <- if (length(beta_vars) > 0) colMeans(draws[, beta_vars, drop = FALSE]) else rep(0, m * p)
     gamma_vec <- if (length(gamma_vars) > 0) colMeans(draws[, gamma_vars, drop = FALSE]) else rep(0, m * r)
-    mu0_vec <- if (length(mu0_vars) > 0) colMeans(draws[, mu0_vars, drop = FALSE]) else rep(0, m)
 
     beta <- matrix(beta_vec, m, p, byrow = FALSE)
     gamma <- if (r > 0) matrix(gamma_vec, m, r, byrow = FALSE) else matrix(0, m, 0)
-    mu0 <- as.numeric(mu0_vec)  # length m
 
-    # Training predictions: mu0[q] + X*beta[q,] + H*gamma[q,]
+    # Training predictions: X*beta[q,] (incl. intercept) + H*gamma[q,]
     eta_tr <- matrix(0, nrow = length(idx_train), ncol = m)
     for (j in seq_len(m)) {
-      eta_tr[, j] <- mu0[j] +
-        as.numeric(X_tr_design %*% beta[j, ]) +
+      eta_tr[, j] <- as.numeric(X_tr_design %*% beta[j, ]) +
         if (r > 0) as.numeric(H_tr %*% gamma[j, ]) else 0
     }
 
@@ -508,8 +496,7 @@ cv_copss_mcmc <- function(y, taus, H, X = NULL, w, grid,
 
     eta_val <- matrix(0, n_val, m)
     for (j in seq_len(m)) {
-      eta_val[, j] <- mu0[j] +
-        as.numeric(X_val %*% beta[j, ]) +
+      eta_val[, j] <- as.numeric(X_val %*% beta[j, ]) +
         if (r > 0) as.numeric(H_val %*% gamma[j, ]) else 0
     }
 
