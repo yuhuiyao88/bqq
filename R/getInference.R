@@ -367,7 +367,6 @@ getEta <- function(fit_result, H = NULL, X = NULL, offset = NULL, n_samples = 10
 # Internal: coherent point estimates (MAP mode / posterior median)
 # =============================================================================
 
-# Build the m x n matrix of point-estimate fitted quantiles eta_hat[q, t] from a
 # Coefficient point estimates beta (m x p) and gamma (m x r) from a getModel()
 # fit, read from fit_result$map$par. getModel() already stores the coherent point
 # estimate there for each fit method, so every consumer that routes through this
