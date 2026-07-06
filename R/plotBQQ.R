@@ -37,20 +37,15 @@
   stop("Quantile levels not found in fit; please pass `taus`.", call. = FALSE)
 }
 
-# MAP fitted quantiles, n x m, reconstructed as X %*% beta + H %*% gamma.
+# Point-estimate fitted quantiles, n x m, reconstructed as X %*% beta + H %*% gamma.
+# Uses the coherent point estimate (MAP mode under MAP, posterior median under
+# MCMC) via .bqq_point_eta / .bqq_coefs, so the plotted central line matches the
+# estimator used for detection and localization.
 .bqq_fitted_quantiles <- function(fit, taus) {
-  par <- fit$map$par
-  if (is.null(par)) stop("BQQ plots require a MAP fit (fit$map$par).", call. = FALSE)
-  m <- length(taus)
-  X <- if (is.null(fit$X)) NULL else as.matrix(fit$X)
-  px <- if (is.null(X)) 0L else ncol(X)
-  beta <- matrix(par[grep("^beta\\[", names(par))], m, px + 1L)
-  r <- if (!is.null(fit$H)) ncol(fit$H) else 0L
-  gamma <- if (r > 0) matrix(par[grep("^gamma\\[", names(par))], m, r) else matrix(0, m, 0)
-  n <- length(fit$y)
-  Xd <- cbind(1, if (is.null(X)) matrix(0, n, 0) else X)
-  sapply(seq_len(m), function(j)
-    as.numeric(Xd %*% beta[j, ]) + (if (r > 0) as.numeric(fit$H %*% gamma[j, ]) else 0))
+  if (is.null(fit$map$par))
+    stop("BQQ plots require a fit with fit$map$par (MAP mode or MCMC posterior median).",
+         call. = FALSE)
+  t(.bqq_point_eta(fit, taus))   # m x n -> n x m
 }
 
 # Significant blocks + their onset/localized observations from a
@@ -202,10 +197,10 @@ plotGammaHeatmap <- function(fit, detection = NULL, taus = NULL, scale = 1,
   .bqq_need_ggplot2()
   pal <- .bqq_pal
   taus <- .bqq_taus(fit, taus); m <- length(taus)
-  par <- fit$map$par
   r <- if (!is.null(fit$H)) ncol(fit$H) else 0L
   if (r == 0) stop("No block-shift design (fit$H has no columns).", call. = FALSE)
-  gamma <- matrix(par[grep("^gamma\\[", names(par))], m, r) * scale
+  # Coherent point estimate of gamma (MAP mode under MAP, posterior median under MCMC).
+  gamma <- .bqq_coefs(fit, m, r)$gamma * scale
   sig <- matrix(FALSE, m, r)
   if (!is.null(detection) && !is.null(detection$adjp_holm)) sig <- detection$adjp_holm < alpha
   blk <- if (!is.null(block_labels)) block_labels else seq_len(r)

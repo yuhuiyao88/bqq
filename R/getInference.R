@@ -364,40 +364,29 @@ getEta <- function(fit_result, H = NULL, X = NULL, offset = NULL, n_samples = 10
 
 
 # =============================================================================
-# Internal: coherent point-estimate fitted quantiles
+# Internal: coherent point estimates (MAP mode / posterior median)
 # =============================================================================
 
 # Build the m x n matrix of point-estimate fitted quantiles eta_hat[q, t] from a
-# getModel() fit, for use in within-block change-time localization.
-#
-# The estimator is taken from fit_result$map$par, which getModel() already sets
-# to the coherent point estimate for each fit method:
+# Coefficient point estimates beta (m x p) and gamma (m x r) from a getModel()
+# fit, read from fit_result$map$par. getModel() already stores the coherent point
+# estimate there for each fit method, so every consumer that routes through this
+# helper uses one estimator:
 #   - fit_method = "mcmc":              posterior MEDIAN of the coefficients
 #                                       (map$estimator == "posterior_median")
 #   - fit_method = "map" / "map_mcmc":  the MAP (posterior mode)
-# Building the localization estimate from map$par (rather than averaging the
-# Laplace/MCMC draws, i.e. a posterior mean) keeps model fitting, cross-validation
-# (cv_copss), and change-time localization on a single estimator: the MAP mode
-# under MAP, and the posterior median under MCMC.
+# This is the single source of truth: detection/localization (.bqq_point_eta),
+# cross-validation (cv_copss), and the plots (plotBQQ) all read from it rather
+# than averaging Laplace/MCMC draws (a posterior mean).
 #
-# offset defaults to 0, matching getEta().
-.bqq_point_eta <- function(fit_result, taus) {
+# map$par has two storage formats: a list with $beta/$gamma (fit_method %in%
+# c("mcmc", "map_mcmc")), or a named vector "beta[i,j]"/"gamma[i,j]"
+# (fit_method "map", optimizing with as_vector = TRUE).
+.bqq_coefs <- function(fit_result, m, r = NULL) {
   par <- fit_result$map$par
   if (is.null(par)) stop("fit_result$map$par is missing")
+  if (is.null(r)) r <- if (!is.null(fit_result$H)) ncol(fit_result$H) else 0L
 
-  H <- fit_result$H
-  X <- fit_result$X
-  m <- length(taus)
-
-  n <- if (!is.null(H)) nrow(H) else if (!is.null(X)) nrow(as.matrix(X)) else length(fit_result$y)
-  r <- if (!is.null(H)) ncol(H) else 0
-  if (is.null(X)) X <- matrix(0, n, 0) else X <- as.matrix(X)
-  offset <- rep(0, n)
-
-  # Coefficient point estimates as matrices beta (m x p), gamma (m x r). Two
-  # storage formats: a list with $beta/$gamma (fit_method %in% c("mcmc",
-  # "map_mcmc")), or a named vector "beta[i,j]"/"gamma[i,j]" (fit_method "map",
-  # optimizing with as_vector = TRUE).
   as_mat <- function(vec) {
     ij <- regmatches(names(vec), regexec("\\[([0-9]+),([0-9]+)\\]", names(vec)))
     rows <- as.integer(vapply(ij, function(z) z[2], character(1)))
@@ -416,6 +405,26 @@ getEta <- function(fit_result, H = NULL, X = NULL, offset = NULL, n_samples = 10
     beta <- if (length(bn)) as_mat(par[bn]) else matrix(0, m, 1)
     gamma <- if (length(gn)) as_mat(par[gn]) else matrix(0, m, 0)
   }
+  list(beta = beta, gamma = gamma)
+}
+
+# Build the m x n matrix of point-estimate fitted quantiles eta_hat[q, t] from a
+# getModel() fit: eta_hat = X %*% beta + H %*% gamma, using the .bqq_coefs point
+# estimate (MAP mode under MAP, posterior median under MCMC). Used for within-block
+# change-time localization. offset defaults to 0, matching getEta().
+.bqq_point_eta <- function(fit_result, taus) {
+  H <- fit_result$H
+  X <- fit_result$X
+  m <- length(taus)
+
+  n <- if (!is.null(H)) nrow(H) else if (!is.null(X)) nrow(as.matrix(X)) else length(fit_result$y)
+  r <- if (!is.null(H)) ncol(H) else 0
+  if (is.null(X)) X <- matrix(0, n, 0) else X <- as.matrix(X)
+  offset <- rep(0, n)
+
+  co <- .bqq_coefs(fit_result, m, r)
+  beta <- co$beta
+  gamma <- co$gamma
 
   p <- ncol(beta)
   if (ncol(X) == p) {
