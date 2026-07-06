@@ -460,12 +460,15 @@ cv_copss_mcmc <- function(y, taus, H, X = NULL, w, grid,
       return(NULL)
     })
 
-    if (is.null(fit) || is.null(fit$draws)) {
+    if (is.null(fit) || is.null(fit$map) || is.null(fit$map$par)) {
       return(list(train = NA, val = NA))
     }
 
-    # Extract posterior means from MCMC draws
-    draws <- fit$draws
+    # Point estimate: getModel() stores the MCMC estimator as the posterior
+    # MEDIAN of the coefficients in fit$map$par (estimator == "posterior_median").
+    # Use it directly so CV scoring uses the same estimator as detection and
+    # change-time localization, rather than a posterior mean of the draws.
+    par <- fit$map$par
 
     # Reconstruct design
     X_tr_design <- {
@@ -480,15 +483,8 @@ cv_copss_mcmc <- function(y, taus, H, X = NULL, w, grid,
     p <- ncol(X_tr_design)
     r <- ncol(H_tr)
 
-    # Get posterior means from draws
-    beta_vars <- grep("^beta\\[", colnames(draws), value = TRUE)
-    gamma_vars <- grep("^gamma\\[", colnames(draws), value = TRUE)
-
-    beta_vec <- if (length(beta_vars) > 0) colMeans(draws[, beta_vars, drop = FALSE]) else rep(0, m * p)
-    gamma_vec <- if (length(gamma_vars) > 0) colMeans(draws[, gamma_vars, drop = FALSE]) else rep(0, m * r)
-
-    beta <- matrix(beta_vec, m, p, byrow = FALSE)
-    gamma <- if (r > 0) matrix(gamma_vec, m, r, byrow = FALSE) else matrix(0, m, 0)
+    beta <- if (!is.null(par$beta)) matrix(as.numeric(par$beta), m, p) else matrix(0, m, p)
+    gamma <- if (r > 0 && !is.null(par$gamma)) matrix(as.numeric(par$gamma), m, r) else matrix(0, m, 0)
 
     # Training predictions: X*beta[q,] (incl. intercept) + H*gamma[q,]
     eta_tr <- matrix(0, nrow = length(idx_train), ncol = m)

@@ -364,6 +364,81 @@ getEta <- function(fit_result, H = NULL, X = NULL, offset = NULL, n_samples = 10
 
 
 # =============================================================================
+# Internal: coherent point-estimate fitted quantiles
+# =============================================================================
+
+# Build the m x n matrix of point-estimate fitted quantiles eta_hat[q, t] from a
+# getModel() fit, for use in within-block change-time localization.
+#
+# The estimator is taken from fit_result$map$par, which getModel() already sets
+# to the coherent point estimate for each fit method:
+#   - fit_method = "mcmc":              posterior MEDIAN of the coefficients
+#                                       (map$estimator == "posterior_median")
+#   - fit_method = "map" / "map_mcmc":  the MAP (posterior mode)
+# Building the localization estimate from map$par (rather than averaging the
+# Laplace/MCMC draws, i.e. a posterior mean) keeps model fitting, cross-validation
+# (cv_copss), and change-time localization on a single estimator: the MAP mode
+# under MAP, and the posterior median under MCMC.
+#
+# offset defaults to 0, matching getEta().
+.bqq_point_eta <- function(fit_result, taus) {
+  par <- fit_result$map$par
+  if (is.null(par)) stop("fit_result$map$par is missing")
+
+  H <- fit_result$H
+  X <- fit_result$X
+  m <- length(taus)
+
+  n <- if (!is.null(H)) nrow(H) else if (!is.null(X)) nrow(as.matrix(X)) else length(fit_result$y)
+  r <- if (!is.null(H)) ncol(H) else 0
+  if (is.null(X)) X <- matrix(0, n, 0) else X <- as.matrix(X)
+  offset <- rep(0, n)
+
+  # Coefficient point estimates as matrices beta (m x p), gamma (m x r). Two
+  # storage formats: a list with $beta/$gamma (fit_method %in% c("mcmc",
+  # "map_mcmc")), or a named vector "beta[i,j]"/"gamma[i,j]" (fit_method "map",
+  # optimizing with as_vector = TRUE).
+  as_mat <- function(vec) {
+    ij <- regmatches(names(vec), regexec("\\[([0-9]+),([0-9]+)\\]", names(vec)))
+    rows <- as.integer(vapply(ij, function(z) z[2], character(1)))
+    cols <- as.integer(vapply(ij, function(z) z[3], character(1)))
+    M <- matrix(0, max(rows), max(cols))
+    M[cbind(rows, cols)] <- as.numeric(vec)
+    M
+  }
+
+  if (is.list(par)) {
+    beta <- as.matrix(par$beta)
+    gamma <- if (!is.null(par$gamma)) as.matrix(par$gamma) else matrix(0, m, 0)
+  } else {
+    bn <- grep("^beta\\[", names(par))
+    gn <- grep("^gamma\\[", names(par))
+    beta <- if (length(bn)) as_mat(par[bn]) else matrix(0, m, 1)
+    gamma <- if (length(gn)) as_mat(par[gn]) else matrix(0, m, 0)
+  }
+
+  p <- ncol(beta)
+  if (ncol(X) == p) {
+    X_design <- X
+  } else if (ncol(X) + 1 == p) {
+    X_design <- cbind(1, X)
+  } else if (p == 1 && ncol(X) == 0) {
+    X_design <- matrix(1, n, 1)
+  } else {
+    stop("X has incompatible number of columns for the point-estimate beta.")
+  }
+
+  eta_hat <- matrix(0, m, n)
+  for (q in seq_len(m)) {
+    xb <- as.numeric(X_design %*% beta[q, ])
+    hg <- if (r > 0 && ncol(gamma) == r) as.numeric(H %*% gamma[q, ]) else 0
+    eta_hat[q, ] <- xb + hg + offset
+  }
+  eta_hat
+}
+
+
+# =============================================================================
 # Gamma-Based Change-Point Detection
 # =============================================================================
 
@@ -465,6 +540,20 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
   } else {
     stop("Unknown fit_method: ", fit_method)
   }
+
+  # Coherent point estimate of the fitted quantiles (m x n) for within-block
+  # localization: MAP mode under fit_method = "map"/"map_mcmc", posterior median
+  # under "mcmc" (see .bqq_point_eta). This replaces averaging the eta draws
+  # (a posterior mean) for signal_position = "pinball"/"max_deviation".
+  eta_point <- tryCatch(
+    .bqq_point_eta(fit_result, taus),
+    error = function(e) {
+      warning("Could not build point-estimate fitted quantiles (",
+              conditionMessage(e), "); localization falls back to the sample ",
+              "mean of `eta` when provided.")
+      NULL
+    }
+  )
 
   n_iter <- dim(gamma_samples)[1]
   r <- dim(gamma_samples)[3]  # number of H columns
@@ -636,7 +725,7 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
   }
 
   # Helper function to determine signal observation within a block
-  get_signal_obs <- function(h_col, position_method, y_data = NULL, eta_data = NULL, tau_levels = NULL) {
+  get_signal_obs <- function(h_col, position_method, y_data = NULL, eta_data = NULL, tau_levels = NULL, eta_hat = NULL) {
     obs_range <- h_to_obs(h_col)
     obs_start <- obs_range[1]
     obs_end <- obs_range[2]
@@ -651,9 +740,15 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
       return(floor((obs_start + obs_end) / 2))
 
     } else if (position_method == "max_deviation") {
-      # Find observation with maximum deviation from the predictive median (fitted eta at tau = 0.5)
-      if (is.null(y_data) || is.null(eta_data)) {
-        warning("y and eta required for max_deviation; using 'first' instead")
+      # Find observation with maximum deviation from the predictive median
+      # (point-estimate fitted eta at tau = 0.5). The point estimate is the MAP
+      # mode (MAP) or posterior median (MCMC); fall back to the eta-draw mean
+      # only if no point estimate is available.
+      qmat <- if (!is.null(eta_hat)) eta_hat
+              else if (!is.null(eta_data)) apply(eta_data, c(2, 3), mean)
+              else NULL
+      if (is.null(y_data) || is.null(qmat)) {
+        warning("y and a fitted quantile estimate required for max_deviation; using 'first' instead")
         return(obs_start)
       }
 
@@ -662,11 +757,10 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
         median_idx <- which.min(abs(tau_levels - 0.5))
       } else {
         # Fallback to middle index if taus not provided
-        median_idx <- ceiling(dim(eta_data)[2] / 2)
+        median_idx <- ceiling(nrow(qmat) / 2)
       }
 
-      # Compute posterior mean of the predictive median (fitted eta at tau = 0.5)
-      eta_median <- apply(eta_data[, median_idx, , drop = FALSE], 3, mean)
+      eta_median <- qmat[median_idx, ]
 
       # Calculate deviations for observations in this block
       block_obs <- obs_start:obs_end
@@ -681,13 +775,17 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
       # weighted pinball (check) loss: assign the pre-block fitted quantile
       # vector to observations before the split and the block's fitted quantile
       # vector at/after it, then pick the split with the lowest loss (the same
-      # check loss used by cv_copss).
-      if (is.null(y_data) || is.null(eta_data) || is.null(tau_levels)) {
-        warning("y, eta, and taus required for pinball; using 'first' instead")
+      # check loss used by cv_copss). The fitted quantiles use the coherent
+      # point estimate (MAP mode under MAP, posterior median under MCMC); the
+      # eta-draw mean is used only as a fallback when no point estimate exists.
+      qhat <- if (!is.null(eta_hat)) eta_hat
+              else if (!is.null(eta_data)) apply(eta_data, c(2, 3), mean)
+              else NULL
+      if (is.null(y_data) || is.null(qhat) || is.null(tau_levels)) {
+        warning("y, a fitted quantile estimate, and taus required for pinball; using 'first' instead")
         return(obs_start)
       }
       if (obs_start < 2) return(obs_start)
-      qhat <- apply(eta_data, c(2, 3), mean)            # posterior-mean fitted quantiles (m x n)
       pre <- qhat[, obs_start - 1]; post <- qhat[, obs_start]
       block_obs <- obs_start:obs_end
       best_c <- obs_start; best_L <- Inf
@@ -728,7 +826,7 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
 
   # Add signal observation based on signal_position method
   detected_blocks$signal_obs <- sapply(detected_blocks$h_col, function(j) {
-    get_signal_obs(j, signal_position, y, eta, taus)
+    get_signal_obs(j, signal_position, y, eta, taus, eta_point)
   })
 
   # First detection — BQQ-Posterior (using signal_obs rather than obs_start)
