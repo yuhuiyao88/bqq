@@ -53,7 +53,7 @@
 # Holm-significant, matching the worked demo).
 .bqq_sig_blocks <- function(detection, alpha) {
   db <- detection$detected_blocks
-  sb <- if (!is.null(detection$adjp_holm)) which(apply(detection$adjp_holm < alpha, 2, any)) else which(db$significant_holm)
+  sb <- if (length(detection$significant_holm)) detection$significant_holm else which(db$significant_holm)
   list(blocks = sb, onset = db$obs_start[sb], located = db$signal_obs[sb])
 }
 
@@ -178,43 +178,123 @@ plotQSSProcess <- function(fit, eta = NULL, H = NULL, X = NULL, time = NULL, tau
 
 #' Plot block-shift coefficient diagnosis (heatmap)
 #'
-#' Graph type 3: the estimated block-shift coefficients gamma as a
-#' quantile-by-block heatmap (diverging fill), with a black border on the cells
-#' that are significant under the BQQ test.
+#' Graph type 3: block-shift heatmap(s) with black borders on the significant
+#' cells. The function auto-detects, from the \code{detection} object, which test
+#' family/families were run and shows the matching panel(s): a \strong{quantile}
+#' panel (the block-shift gammas as a quantile-by-block map) and/or a \strong{QSS}
+#' panel (the four studentized shape contrasts L, S, Sk, K by block). If only one
+#' family was computed, only that panel is drawn; if both, both are stacked (via
+#' \pkg{patchwork} when available). Borders follow the statistic recorded in
+#' \code{detection}: per-cell where \eqn{|z|} exceeds the calibrated cell-max
+#' threshold, or whole significant columns under the Hotelling \eqn{T^2}.
 #'
 #' @param fit A MAP fit from \code{getModel()}.
-#' @param detection Optional \code{detectChangepoints_gamma()} result; cells with
-#'   Holm-adjusted p < \code{alpha} get a black border.
+#' @param detection Optional \code{detectChangepoints_gamma()} result. Its
+#'   \code{basis}/\code{statistic} fields drive which panels appear and how cells
+#'   are bordered. Older results without those fields fall back to a quantile panel
+#'   (Holm-bordered), plus a QSS panel if \code{z_qss} is present.
 #' @param taus Quantile levels (default recovered from \code{fit}).
 #' @param scale Multiply coefficients for display (e.g. the fitting SD).
 #' @param alpha Significance level for the cell borders (default 0.05).
 #' @param block_labels Optional labels for the block (x) axis (default block index).
 #' @param title Optional plot title.
-#' @return A ggplot object.
+#' @param sig_block Optional length-\code{r} logical vector of significant blocks.
+#'   When supplied it takes precedence for the quantile panel: every cell in a
+#'   significant block gets the black border, so flagged blocks read as whole
+#'   bordered columns. Default \code{NULL} keeps the detection-driven behavior.
+#' @param basis Optional character vector (\code{"quantile"}, \code{"qss"}) to force
+#'   which panel(s) to draw, overriding the auto-detection from \code{detection}.
+#' @param whiten Logical (default FALSE). If FALSE, display the studentized cell
+#'   z-scores (raw, interpretable — quantiles or L/S/Sk/K). If TRUE, display the
+#'   whitened squared z-scores (the cell-level Hotelling contributions that sum to
+#'   the block and overall T^2). Requires a \code{detection} object.
+#' @return A ggplot object when one family is shown; a \pkg{patchwork} of two panels
+#'   when both are shown (or a named list of ggplots if \pkg{patchwork} is absent).
 #' @export
 plotGammaHeatmap <- function(fit, detection = NULL, taus = NULL, scale = 1,
-                             alpha = 0.05, block_labels = NULL, title = NULL) {
+                             alpha = 0.05, block_labels = NULL, title = NULL,
+                             sig_block = NULL, basis = NULL, whiten = FALSE) {
   .bqq_need_ggplot2()
   pal <- .bqq_pal
   taus <- .bqq_taus(fit, taus); m <- length(taus)
   r <- if (!is.null(fit$H)) ncol(fit$H) else 0L
   if (r == 0) stop("No block-shift design (fit$H has no columns).", call. = FALSE)
-  # Coherent point estimate of gamma (MAP mode under MAP, posterior median under MCMC).
-  gamma <- .bqq_coefs(fit, m, r)$gamma * scale
-  sig <- matrix(FALSE, m, r)
-  if (!is.null(detection) && !is.null(detection$adjp_holm)) sig <- detection$adjp_holm < alpha
   blk <- if (!is.null(block_labels)) block_labels else seq_len(r)
-  df <- expand.grid(qi = seq_len(m), bj = seq_len(r))
-  df$gamma <- gamma[cbind(df$qi, df$bj)]
-  df$sig <- sig[cbind(df$qi, df$bj)]
-  df$tau <- factor(format(taus[df$qi]), levels = format(taus))
-  df$block <- factor(blk[df$bj], levels = blk)
-  lim <- max(abs(gamma), na.rm = TRUE); if (!is.finite(lim) || lim == 0) lim <- 1
-  ggplot2::ggplot(df, ggplot2::aes(x = block, y = tau)) +
-    ggplot2::geom_tile(ggplot2::aes(fill = gamma)) +
-    ggplot2::geom_tile(data = df[df$sig, , drop = FALSE], fill = NA, color = "black", linewidth = 0.6) +
-    ggplot2::scale_fill_gradient2(low = pal$steel, mid = "white", high = pal$crimson,
-                                  midpoint = 0, limits = c(-lim, lim)) +
-    ggplot2::labs(x = "block", y = expression(tau), fill = expression(gamma), title = title) +
-    .bqq_theme()
+
+  ## ---- which family/families to show: honor `basis`, else auto-detect from `detection` ----
+  fams <- basis
+  if (is.null(fams)) {
+    if (is.null(detection)) fams <- "quantile"
+    else if (!is.null(detection$basis)) fams <- detection$basis
+    else { fams <- "quantile"; if (!is.null(detection$z_qss)) fams <- c(fams, "qss") }
+  }
+  fams <- intersect(c("quantile", "qss"), fams)
+  if ("qss" %in% fams && (is.null(detection) || is.null(detection$z_qss))) fams <- setdiff(fams, "qss")
+  if (length(fams) == 0) fams <- "quantile"
+  stat <- if (!is.null(detection) && !is.null(detection$statistic)) detection$statistic else "ui"
+  use_t2 <- ("hotelling_t2" %in% stat) && !("ui" %in% stat)   # UI wins if both requested
+
+  ## ---- single-panel builder; sig_cols = significant blocks (whole-column border) ----
+  heat <- function(vals, rowlab, sig_cols, fill_lab, subtitle, diverging) {
+    d <- expand.grid(ri = seq_len(nrow(vals)), bj = seq_len(r))
+    d$val   <- vals[cbind(d$ri, d$bj)]
+    d$sig   <- d$bj %in% sig_cols
+    d$row   <- factor(rowlab[d$ri], levels = rowlab)
+    d$block <- factor(blk[d$bj], levels = blk)
+    g <- ggplot2::ggplot(d, ggplot2::aes(x = block, y = row)) +
+      ggplot2::geom_tile(ggplot2::aes(fill = val)) +
+      ggplot2::geom_tile(data = d[d$sig, , drop = FALSE], fill = NA, color = "black", linewidth = 0.6)
+    if (diverging) {
+      lim <- max(abs(vals), na.rm = TRUE); if (!is.finite(lim) || lim == 0) lim <- 1
+      g <- g + ggplot2::scale_fill_gradient2(low = pal$steel, mid = "white", high = pal$crimson,
+                                             midpoint = 0, limits = c(-lim, lim))
+    } else {
+      g <- g + ggplot2::scale_fill_gradient(low = "white", high = pal$crimson)
+    }
+    g + ggplot2::labs(x = "block", y = NULL, fill = fill_lab, subtitle = subtitle) + .bqq_theme()
+  }
+
+  panels <- list()
+
+  ## ---- quantile panel ----
+  if ("quantile" %in% fams) {
+    if (!is.null(detection) && !is.null(detection$z_raw)) {
+      vals <- if (whiten) detection$cellstat else detection$z_raw
+      rl   <- rownames(detection$z_raw); if (is.null(rl)) rl <- format(taus)
+      flab <- if (whiten) expression(tilde(z)^2) else "z"
+      sub  <- if (whiten) "quantile: whitened z² (Hotelling cells)" else "quantile: studentized z"
+    } else {
+      vals <- .bqq_coefs(fit, m, r)$gamma * scale; rl <- format(taus)
+      flab <- expression(gamma); sub <- "quantile: block-shift gamma"
+    }
+    sig_cols <- if (!is.null(sig_block)) which(as.logical(sig_block))
+                else if (use_t2) detection$significant_wald_calib
+                else if (!is.null(detection)) detection$significant_calib else integer(0)
+    panels$quantile <- heat(vals, rl, sig_cols, flab, sub, diverging = !whiten)
+  }
+
+  ## ---- QSS panel ----
+  if ("qss" %in% fams) {
+    vals <- if (whiten) detection$cellstat_qss else detection$z_qss
+    rl   <- rownames(detection$z_qss); if (is.null(rl)) rl <- c("L", "S", "Sk", "K")
+    flab <- if (whiten) expression(tilde(z)^2) else "z"
+    sub  <- if (whiten) "QSS: whitened z² (Hotelling cells)" else "QSS: studentized shape contrasts"
+    sig_cols <- if (use_t2) detection$significant_qss_t2_calib else detection$significant_qss_calib
+    panels$qss <- heat(vals, rl, sig_cols, flab, sub, diverging = !whiten)
+  }
+
+  ## ---- return one panel, or stack both ----
+  if (length(panels) == 1L) {
+    p <- panels[[1]]
+    if (!is.null(title)) p <- p + ggplot2::labs(title = title)
+    return(p)
+  }
+  if (requireNamespace("patchwork", quietly = TRUE)) {
+    combo <- patchwork::wrap_plots(panels$quantile, panels$qss, ncol = 1L)
+    if (!is.null(title)) combo <- combo + patchwork::plot_annotation(title = title)
+    return(combo)
+  }
+  message("Both quantile and QSS results are present; install 'patchwork' to stack ",
+          "them into one figure. Returning a named list of ggplot objects instead.")
+  panels
 }

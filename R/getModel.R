@@ -65,14 +65,13 @@
 #' @param beta_sd Positive scalar prior std dev for \code{betaX} coefficients under
 #'   \code{prior_beta = "normal"} (default 1.0).
 #' @param lambda_nc Positive scalar weight for the non-crossing penalty (larger is stricter).
-#' @param adaptive_iq Logical; if TRUE (default), the IQ shrinkage rate lambda_iq2
-#'   is learned from data via a Gamma prior. If FALSE, lambda_iq2_fixed is used.
-#' @param lambda_iq2_a,lambda_iq2_b Positive shape/rate hyperparameters for the
-#'   IQ shrinkage rate \eqn{\lambda_{iq}^2} (used when adaptive_iq = TRUE).
-#'   Prior: \eqn{\lambda_{iq}^2 \sim \mathrm{Gamma}(a, b)}, mean = a/b.
-#'   Effective penalty weight is \eqn{\sqrt{\lambda_{iq}^2}}.
-#' @param lambda_iq2_fixed Positive scalar; fixed value for \eqn{\lambda_{iq}^2} when
-#'   adaptive_iq = FALSE (default 1). Effective penalty = \eqn{\sqrt{\lambda_{iq2\_fixed}}}.
+#' @param lambda_iq Non-negative scalar, the interquantile (IQ) shrinkage weight: an
+#'   L1 fusion penalty \eqn{\lambda_{iq}\sum_q |\gamma_q - \gamma_{q-1}|} pulling adjacent
+#'   quantiles' coefficients together (larger = stronger fusion; 0 = none; default 1).
+#'   This is the effective penalty weight directly -- no square. Fixed, not learned: the
+#'   data-adaptive IQ prior was removed because its joint-MAP mode is degenerate
+#'   (collapses to 0) under \code{fit_method = "map"}, unlike the normalized
+#'   scale-mixture priors on the beta/gamma coefficients.
 #' @param eps_rel Positive scalar "smoothing temperature" (dimensionless).
 #' @param adaptive_beta Logical; if TRUE (default), the beta-side shrinkage level
 #'   \eqn{\lambda_\beta^2} is learned from data for LASSO-type priors. If FALSE,
@@ -119,7 +118,9 @@
 #'   \code{"adaptive_lasso"}. The intercept \code{beta0} always retains its own
 #'   normal prior \code{beta0[q] ~ Normal(quantile(y[1:w], tau_q), beta0_scale[q])}.
 #' @param prior_gamma Prior type for gamma: \code{"group_lasso"}, \code{"lasso"},
-#'   \code{"spike_slab"}, \code{"het_group_lasso"}, or \code{"adaptive_lasso"}.
+#'   \code{"spike_slab"}, \code{"het_group_lasso"}, \code{"adaptive_lasso"}, or
+#'   \code{"spike_slab_lasso"} (a continuous Laplace spike + Laplace slab mixture,
+#'   Rockova & George 2018; reuses \code{spike_sd}/\code{slab_sd} as Laplace scales).
 #'   The \code{"adaptive_lasso"} option follows a Leng et al. (2014)-style hierarchy
 #'   with coefficient-specific local shrinkage parameters. The
 #'   \code{"het_group_lasso"} option combines group-level shrinkage with
@@ -167,9 +168,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
                         alpha = 0.75, eps_w = 1e-6, c_sigma = 1.0,
                         base_scale = NULL, beta0_scale = NULL, beta_sd = 1.0,
                         lambda_nc = 2, eps_rel = 0.1,
-                        adaptive_iq = TRUE,
-                        lambda_iq2_a = 1, lambda_iq2_b = 0.1,
-                        lambda_iq2_fixed = 1,
+                        lambda_iq = 1,
                         adaptive_beta = TRUE,
                         lambda_beta2_a = 1, lambda_beta2_b = 0.05,
                         lambda_beta2_fixed = 1,
@@ -190,7 +189,8 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
                         prior_beta = c("normal", "lasso", "spike_slab",
                                        "group_lasso", "het_group_lasso", "adaptive_lasso"),
                         prior_gamma = c("group_lasso", "lasso", "spike_slab",
-                                        "het_group_lasso", "adaptive_lasso"),
+                                        "het_group_lasso", "adaptive_lasso",
+                                        "spike_slab_lasso"),
                         beta_spike_sd = 0.05, beta_slab_sd = 2.0,
                         beta_slab_pi_a = 1, beta_slab_pi_b = 1,
                         spike_sd = 0.05, slab_sd = 2.0,
@@ -214,7 +214,8 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
     lasso              = 2L,
     spike_slab         = 3L,
     het_group_lasso    = 4L,
-    adaptive_lasso     = 5L
+    adaptive_lasso     = 5L,
+    spike_slab_lasso   = 6L
   )
 
   safe_pilot_coefs <- function(y, Z, tau, eps_w = 1e-3, lambda_lasso = NULL) {
@@ -277,11 +278,8 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
 
       real<lower=0> lambda_nc;         // non-crossing penalty weight
 
-      // Interquantile (fused lasso) shrinkage
-      real<lower=0> lambda_iq2_a;      // Gamma prior shape for lambda_iq^2 (when adaptive_iq = 1)
-      real<lower=0> lambda_iq2_b;      // Gamma prior rate  for lambda_iq^2 (when adaptive_iq = 1)
-      int<lower=0, upper=1> adaptive_iq;  // 1 = data-adaptive, 0 = fixed
-      real<lower=0> lambda_iq2_fixed;  // fixed value for lambda_iq^2 when adaptive_iq = 0
+      // Interquantile (fused lasso) shrinkage: fixed effective penalty weight
+      real<lower=0> lambda_iq;         // L1 fusion weight on adjacent-quantile differences
 
       real eps_rel;                      // smoothing temperature (dimensionless)
 
@@ -300,7 +298,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
 
       // prior selectors
       int<lower=1, upper=6> prior_beta_code;
-      int<lower=1, upper=5> prior_code;
+      int<lower=1, upper=6> prior_code;
 
       // beta spike-and-slab hyperparameters
       real<lower=0> beta_spike_sd;
@@ -401,9 +399,6 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
 
       // Global LASSO rate (learned when adaptive_gamma = 1)
       real<lower=0> lambda_lasso2;
-
-      // IQ shrinkage rate squared (learned when adaptive_iq = 1)
-      real<lower=0> lambda_iq2;
 
       // Spike-and-slab mixing weights
       real<lower=0, upper=1> pi_slab_beta;
@@ -570,7 +565,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
 
         // Determine effective lambda_lasso2 value for lasso-type priors.
         real lambda_lasso2_eff;
-        if (prior_code != 3) {
+        if (prior_code != 3 && prior_code != 6) {
           if (adaptive_gamma == 1) {
             lambda_lasso2 ~ gamma(lambda_lasso2_a, lambda_lasso2_b);
             lambda_lasso2_eff = lambda_lasso2;
@@ -635,6 +630,22 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
               gamma[j, i] ~ normal(0, sqrt(sigma2_gamma[j, i]));
             }
           }
+
+        // 6 = spike-and-slab LASSO (Laplace spike + Laplace slab; Rockova & George 2018).
+        // The Laplace spike contributes zero curvature away from 0, so the Laplace-
+        // approximation posterior variance is driven by the likelihood (honest) rather
+        // than a tiny prior variance -- avoids the near-Dirac Gaussian-spike degeneracy.
+        } else if (prior_code == 6) {
+          pi_slab ~ beta(slab_pi_a, slab_pi_b);
+          for (j in 1:m) {
+            for (i in 1:r) {
+              target += log_mix(
+                pi_slab,
+                double_exponential_lpdf(gamma[j, i] | 0, slab_sd),
+                double_exponential_lpdf(gamma[j, i] | 0, spike_sd)
+              );
+            }
+          }
         }
       }
 
@@ -665,17 +676,8 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
       // Penalizes |coef[q] - coef[q-1]| with IQ weights (more shrinkage at outer quantiles)
       // Applied to gamma and betaX slopes (NOT the intercept beta0)
       {
-        // Determine effective lambda_iq^2 value, then take sqrt for the penalty
-        real lambda_iq2_eff;
-        if (adaptive_iq == 1) {
-          // Data-adaptive: learn lambda_iq^2 from data via Gamma prior
-          lambda_iq2 ~ gamma(lambda_iq2_a, lambda_iq2_b);
-          lambda_iq2_eff = lambda_iq2;
-        } else {
-          // Fixed: use the user-specified value
-          lambda_iq2_eff = lambda_iq2_fixed;
-        }
-        real lambda_iq_eff = sqrt(lambda_iq2_eff);
+        // Fixed effective IQ penalty weight (user-supplied; no adaptive rate, no square)
+        real lambda_iq_eff = lambda_iq;
 
         if (lambda_iq_eff > 0) {
           real pen_iq_gamma = 0;
@@ -824,9 +826,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
     beta0_loc = beta0_loc, beta0_scale = beta0_scale,
     base_scale = base_scale, c_sigma = c_sigma, beta_sd = beta_sd,
     lambda_nc = lambda_nc, eps_rel = eps_rel,
-    lambda_iq2_a = lambda_iq2_a, lambda_iq2_b = lambda_iq2_b,
-    adaptive_iq = as.integer(adaptive_iq),
-    lambda_iq2_fixed = lambda_iq2_fixed,
+    lambda_iq = lambda_iq,                        # fixed effective IQ fusion weight
     lambda_beta2_a = lambda_beta2_a, lambda_beta2_b = lambda_beta2_b,
     adaptive_beta = as.integer(adaptive_beta),
     lambda_beta2_fixed = lambda_beta2_fixed,
@@ -935,8 +935,8 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
         # sigma2_gamma (<lower=0>): log
         tg_idx <- grep("^sigma2_gamma\\[", raw_par_names)
         if (length(tg_idx) > 0) theta_unc_full[tg_idx] <- log(pmax(par_map[tg_idx], 1e-10))
-        # lambda_lasso2, lambda_beta2, lambda_iq2, omega_* (<lower=0>): log
-        for (pat in c("^lambda_lasso2$", "^lambda_beta2$", "^lambda2_beta_local\\[", "^lambda2_gamma_local\\[", "^lambda_iq2$", "^omega_group", "^omega_beta_group")) {
+        # lambda_lasso2, lambda_beta2, omega_* (<lower=0>): log
+        for (pat in c("^lambda_lasso2$", "^lambda_beta2$", "^lambda2_beta_local\\[", "^lambda2_gamma_local\\[", "^omega_group", "^omega_beta_group")) {
           idx_tmp <- grep(pat, raw_par_names)
           if (length(idx_tmp) > 0) theta_unc_full[idx_tmp] <- log(pmax(par_map[idx_tmp], 1e-10))
         }

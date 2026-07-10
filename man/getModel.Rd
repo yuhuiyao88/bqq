@@ -14,14 +14,12 @@ getModel(
   alpha = 0.75,
   eps_w = 1e-06,
   c_sigma = 1,
-  beta0_sd = 1,
+  base_scale = NULL,
+  beta0_scale = NULL,
   beta_sd = 1,
   lambda_nc = 2,
   eps_rel = 0.1,
-  adaptive_iq = TRUE,
-  lambda_iq2_a = 1,
-  lambda_iq2_b = 0.1,
-  lambda_iq2_fixed = 1,
+  lambda_iq = 1,
   adaptive_beta = TRUE,
   lambda_beta2_a = 1,
   lambda_beta2_b = 0.05,
@@ -50,7 +48,7 @@ getModel(
   prior_beta = c("normal", "lasso", "spike_slab", "group_lasso", "het_group_lasso",
     "adaptive_lasso"),
   prior_gamma = c("group_lasso", "lasso", "spike_slab", "het_group_lasso",
-    "adaptive_lasso"),
+    "adaptive_lasso", "spike_slab_lasso"),
   beta_spike_sd = 0.05,
   beta_slab_sd = 2,
   beta_slab_pi_a = 1,
@@ -85,8 +83,14 @@ in the IQ shrinkage weights (default 1e-6).}
 
 \item{c_sigma}{Positive scalar scaling factor for the base scale (default 1.0).}
 
-\item{beta0_sd}{Positive scalar prior std dev for the intercept coefficients
-\code{beta0} (default 1.0).}
+\item{base_scale}{Optional positive scalar robust scale; defaults to
+\code{1.4826 * mad(y)}. Sets the smoothing temperature
+(\code{smooth_T = base_scale * eps_rel}) and the default \code{beta0_scale}.}
+
+\item{beta0_scale}{Prior std dev for the per-quantile intercept \code{beta0};
+a positive scalar (recycled) or length-\code{m} vector, defaulting to
+\code{base_scale} per quantile. The prior is
+\code{beta0[q] ~ Normal(quantile(y[1:w], tau_q), beta0_scale[q])}.}
 
 \item{beta_sd}{Positive scalar prior std dev for \code{betaX} coefficients under
 \code{prior_beta = "normal"} (default 1.0).}
@@ -95,16 +99,13 @@ in the IQ shrinkage weights (default 1e-6).}
 
 \item{eps_rel}{Positive scalar "smoothing temperature" (dimensionless).}
 
-\item{adaptive_iq}{Logical; if TRUE (default), the IQ shrinkage rate lambda_iq2
-is learned from data via a Gamma prior. If FALSE, lambda_iq2_fixed is used.}
-
-\item{lambda_iq2_a, lambda_iq2_b}{Positive shape/rate hyperparameters for the
-IQ shrinkage rate \eqn{\lambda_{iq}^2} (used when adaptive_iq = TRUE).
-Prior: \eqn{\lambda_{iq}^2 \sim \mathrm{Gamma}(a, b)}, mean = a/b.
-Effective penalty weight is \eqn{\sqrt{\lambda_{iq}^2}}.}
-
-\item{lambda_iq2_fixed}{Positive scalar; fixed value for \eqn{\lambda_{iq}^2} when
-adaptive_iq = FALSE (default 1). Effective penalty = \eqn{\sqrt{\lambda_{iq2\_fixed}}}.}
+\item{lambda_iq}{Non-negative scalar, the interquantile (IQ) shrinkage weight: an
+L1 fusion penalty \eqn{\lambda_{iq}\sum_q |\gamma_q - \gamma_{q-1}|} pulling adjacent
+quantiles' coefficients together (larger = stronger fusion; 0 = none; default 1).
+This is the effective penalty weight directly -- no square. Fixed, not learned: the
+data-adaptive IQ prior was removed because its joint-MAP mode is degenerate
+(collapses to 0) under \code{fit_method = "map"}, unlike the normalized
+scale-mixture priors on the beta/gamma coefficients.}
 
 \item{adaptive_beta}{Logical; if TRUE (default), the beta-side shrinkage level
 \eqn{\lambda_\beta^2} is learned from data for LASSO-type priors. If FALSE,
@@ -168,11 +169,13 @@ fallback instead.}
 
 \item{prior_beta}{Prior type for \code{betaX}: \code{"normal"}, \code{"lasso"},
 \code{"spike_slab"}, \code{"group_lasso"}, \code{"het_group_lasso"}, or
-\code{"adaptive_lasso"}. The intercept \code{beta0} always retains the weakly
-informative normal prior specified by \code{beta0_sd}.}
+\code{"adaptive_lasso"}. The intercept \code{beta0} always retains its own
+normal prior \code{beta0[q] ~ Normal(quantile(y[1:w], tau_q), beta0_scale[q])}.}
 
 \item{prior_gamma}{Prior type for gamma: \code{"group_lasso"}, \code{"lasso"},
-\code{"spike_slab"}, \code{"het_group_lasso"}, or \code{"adaptive_lasso"}.
+\code{"spike_slab"}, \code{"het_group_lasso"}, \code{"adaptive_lasso"}, or
+\code{"spike_slab_lasso"} (a continuous Laplace spike + Laplace slab mixture,
+Rockova & George 2018; reuses \code{spike_sd}/\code{slab_sd} as Laplace scales).
 The \code{"adaptive_lasso"} option follows a Leng et al. (2014)-style hierarchy
 with coefficient-specific local shrinkage parameters. The
 \code{"het_group_lasso"} option combines group-level shrinkage with
@@ -196,7 +199,7 @@ A list with components:
 }
 \description{
 Fits a multi-quantile (\eqn{m}) regression model where the conditional
-quantile function is modeled as a latent random walk in time (or index)
+quantile function is modeled with a per-quantile intercept (in time or index)
 with optional fixed effects \eqn{X} and structured effects \eqn{H}.
 The \eqn{H}-coefficients are shrunk via **Bayesian LASSO-type priors**
 (group, elementwise, heterogeneous-group, or adaptive), and adjacent quantiles
@@ -211,8 +214,8 @@ coefficients.
     \itemize{
       \item \eqn{y_i} is optionally jittered (\code{u ~ Beta(1,1)}) and/or log-transformed.
       \item Combined linear predictor
-      \eqn{\eta_{qi} = \mu_{q,i} + \beta_{0,q} + x_i^\top \beta_{X,q} + h_i^\top \gamma_q + \mathrm{offset}_i}.
-      \item \eqn{\mu_{q,\cdot}} is a random walk per quantile: \eqn{\mu_{q,t} = \mu_{q,t-1} + \tau^{(rw)}_q z_{q,t-1}}.
+      \eqn{\eta_{qi} = \beta_{0,q} + x_i^\top \beta_{X,q} + h_i^\top \gamma_q + \mathrm{offset}_i}.
+      \item \eqn{\beta_{0,q}} is a per-quantile intercept with an informative prior centered at the warm-up-window quantiles.
     }
   }
   \item{Interquantile shrinkage}{
@@ -224,8 +227,7 @@ coefficients.
     (Jiang, Wang, & Bondell 2013).
     Weights are applied separately to gamma and beta slopes.
     Falls back to uniform weights (all 1) when \pkg{quantreg} is not available.
-    Note: Intercept is NOT penalized (per Jiang, Wang, & Bondell 2013).
-    Note: mu (random walk) is NOT penalized to allow quantile-specific temporal evolution.
+    Note: Intercept (beta0) is NOT penalized (per Jiang, Wang, & Bondell 2013).
   }
   \item{Non-crossing penalty}{
     Adds an L1 hinge on the finite-difference derivative in \eqn{\tau},

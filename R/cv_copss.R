@@ -550,3 +550,5 @@ cv_copss_mcmc <- function(y, taus, H, X = NULL, w, grid,
 
   out
 }
+
+

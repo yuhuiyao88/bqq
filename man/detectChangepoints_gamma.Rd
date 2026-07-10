@@ -9,13 +9,18 @@ detectChangepoints_gamma(
   taus,
   l,
   w,
-  signal_position = c("first", "last", "middle", "max_deviation"),
+  signal_position = c("first", "last", "middle", "max_deviation", "pinball"),
   y = NULL,
   eta = NULL,
-  n_samples = 1000,
+  laplace_n_samples = 1000,
   alpha = 0.05,
-  alternative = "two.sided",
+  basis = c("quantile", "qss"),
+  statistic = c("ui", "hotelling_t2"),
   whiten = TRUE,
+  calibrated = NULL,
+  block_test = NULL,
+  qss = NULL,
+  n_calib = 2000L,
   seed = NULL
 )
 }
@@ -32,38 +37,73 @@ detectChangepoints_gamma(
 - "first": First observation in the block (default)
 - "last": Last observation in the block
 - "middle": Middle observation in the block
-- "max_deviation": Observation with maximum deviation from the predictive median (fitted eta at tau = 0.5)}
+- "max_deviation": Observation with maximum deviation from the predictive median (fitted eta at tau = 0.5)
+- "pinball": Observation that splits the block to minimize the equally weighted pinball (check) loss between the pre-block and block fitted quantile vectors (the same loss used for cross-validation)}
 
-\item{y}{Original data (required only for signal_position = "max_deviation")}
+\item{y}{Original data (required for signal_position = "max_deviation" or "pinball")}
 
-\item{eta}{Predictive quantiles array (required only for signal_position = "max_deviation")}
+\item{eta}{Predictive quantiles array (required for signal_position = "max_deviation" or "pinball")}
 
-\item{n_samples}{Number of samples for Laplace approximation (only used for backward
-compatibility when laplace_samples not available)}
+\item{laplace_n_samples}{Number of Laplace draws generated on the fly, used only
+for backward compatibility when \code{fit_result$laplace_samples} is absent
+(a normal MAP fit already carries the draws, so this is otherwise ignored).}
 
-\item{alpha}{Significance level used for both the BQQ-Posterior tail-area
-decision rule and the BQQ-Z asymptotic test.}
+\item{alpha}{Significance level for all cell and block decisions (two-sided).}
 
-\item{alternative}{Direction of the test: "two.sided" (default), "greater", or "less".
-"greater" tests H1: gamma > 0 (positive shift). "less" tests H1: gamma < 0
-(negative shift). Applies to both BQQ-Posterior and BQQ-Z.}
+\item{basis}{Character vector selecting which test family/families to compute:
+\code{"quantile"} (the raw quantile block-gammas) and/or \code{"qss"} (the four
+shape contrasts derived from those quantiles). Default is both; \code{"both"} is
+also accepted. The QSS family is simply the quantile family rotated into an
+interpretable, moment-aligned basis (L, S, Sk, K).}
 
-\item{whiten}{Logical (default TRUE). If TRUE, apply whitening (decorrelation via
-Cholesky decomposition of the posterior covariance) to gamma samples before
-computing the BQQ-Posterior and BQQ-Z statistics. If FALSE, use raw gamma
-samples directly.}
+\item{statistic}{Character vector selecting how a block's cells are combined into a
+block-level test. Both are built from the same globally-whitened cell z-scores
+\eqn{\tilde z = R^{-1/2} z}: \code{"ui"} (default) is the union-intersection / max
+test \eqn{\max_k |\tilde z_k|}, and \code{"hotelling_t2"} is the sum
+\eqn{\sum_k \tilde z_k^2}. The cell-specific statistic \eqn{\tilde z_k^2} sums to
+the block \eqn{T^2} (over the block's cells) and to the overall \eqn{T^2 = z'R^{-1}z}
+(over all cells). \code{"cell_max"} is accepted as a deprecated alias for \code{"ui"}.
+The legacy \code{calibrated}/\code{block_test}/\code{qss} flags are derived from
+\code{basis} and \code{statistic} unless passed explicitly.}
 
-\item{seed}{Random seed (only used when generating new Laplace samples)}
+\item{whiten}{Logical (default TRUE). If TRUE, whiten the cells globally
+(\eqn{\tilde z = R^{-1/2} z}) so they are independent under H0 — the UI and
+Hotelling \eqn{T^2} then have exact (chi-square / max-of-iid) p-values and the
+\eqn{T^2} is the exact \eqn{z' R^{-1} z}. If FALSE, the cells are only
+self-standardized (\eqn{\tilde z = z}); the \eqn{T^2} becomes the naive sum of
+squared standardized z (cross-correlation ignored) and the p-values are
+approximate. Whitening decorrelates but mixes the interpretable cells.}
+
+\item{calibrated}{Logical or NULL (default NULL = derive). If TRUE, run the UI test
+on the quantile basis; \code{significant_calib} is its calibrated (single-step max)
+member of the adjustment family.}
+
+\item{block_test}{Logical or NULL (default NULL = derive). If TRUE, run the Hotelling
+\eqn{T^2} on the quantile basis (\code{significant_wald_*}, \code{W_block}).}
+
+\item{qss}{Logical or NULL (default NULL = derive). If TRUE, run the requested test(s)
+on the QSS basis — the four shape contrasts L = \eqn{\gamma_{.5}}, S =
+\eqn{\gamma_{.75}-\gamma_{.25}}, Sk = \eqn{\gamma_{.75}+\gamma_{.25}-2\gamma_{.5}},
+K = \eqn{(\gamma_{.975}-\gamma_{.025}) - \kappa_0(\gamma_{.75}-\gamma_{.25})}
+(\code{significant_qss_*}, \code{significant_qss_t2_*}). \eqn{\kappa_0} falls back to
+the standard-normal tail/IQR ratio when the intercept posterior is unavailable.
+Requires the five-quantile grid (0.025, 0.25, 0.5, 0.75, 0.975).}
+
+\item{n_calib}{Retained for backward compatibility; unused (the whitened tests are
+analytic and need no Monte-Carlo calibration).}
+
+\item{seed}{Random seed (only used when generating new Laplace samples).}
 }
 \value{
-List with change-point detection results from two complementary
-  charting statistics: (i) BQQ-Posterior, the posterior tail-area test
-  (\code{pvalue_qj}, \code{adjp_*}, \code{significant_*}, \code{pvalue_posterior});
-  and (ii) BQQ-Z, the asymptotic Z-statistic test on the decorrelated samples
-  (\code{z_stat}, \code{pvalue_z_qj}, \code{adjp_z_*}, \code{significant_z_*},
-  \code{pvalue_z_block}). Both share the same multiple-testing correction
-  (jointly across the \eqn{m \times r} tests) and the same block-level
-  aggregation rule.
+A list. \code{tests[[basis]]} (\code{"quantile"} / \code{"qss"}) carries
+  \code{$z} (studentized cells), \code{$z_white} (whitened), \code{$cellstat}
+  (whitened \eqn{\tilde z^2}), and \code{$ui} / \code{$hotelling_t2} — each with
+  \code{stat}, \code{pvalue}, \code{adjp_holm/bonf/bh}, \code{c_calib}, and
+  \code{sig_raw/holm/bonf/bh/calib} over the r blocks — plus \code{$overall_ui(_p)}
+  and \code{$overall_t2(_p)}. \code{detected_blocks} carries the significance flags
+  for all four charts (\code{significant_*}, \code{significant_wald_*},
+  \code{significant_qss_*}, \code{significant_qss_t2_*}). Flat aliases and
+  \code{basis}/\code{statistic}/\code{k0_hat} are also returned.
 }
 \description{
 Uses the H-matrix gamma coefficients directly for change-point detection.

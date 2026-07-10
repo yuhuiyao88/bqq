@@ -55,6 +55,12 @@ getLaplaceSamples <- function(map_fit, hessian = NULL, n_samples = 1000,
   k <- if (!is.null(hessian)) nrow(hessian) else 0
   raw_par_names <- if (k > 0) par_names[1:k] else character(0)
 
+  # Real Hessian-based Laplace only; the heuristic-perturbation fallback has been
+  # removed package-wide (decision: no heuristic draws). Fit with map_hessian = TRUE.
+  if (is.null(hessian) || k == 0)
+    stop("getLaplaceSamples: a Hessian is required (fit with map_hessian = TRUE); ",
+         "the heuristic fallback has been removed.", call. = FALSE)
+
   parse_2d <- function(names_vec, idx, prefix) {
     dims_str <- gsub(paste0(prefix, "\\[|\\]"), "", names_vec[idx])
     dims_split <- strsplit(dims_str, ",")
@@ -115,11 +121,13 @@ getLaplaceSamples <- function(map_fit, hessian = NULL, n_samples = 1000,
       z_mat <- matrix(rnorm(n_samples * length(eta_param_idx)), n_samples, length(eta_param_idx))
       sweep(z_mat %*% L, 2, theta_map_unc, "+")
     }, error = function(e) {
-      warning("Hessian-based Laplace failed: ", conditionMessage(e),
-              ". Falling back to heuristic noise.")
-      NULL
+      stop("getLaplaceSamples: Hessian-based Laplace failed: ",
+           conditionMessage(e), call. = FALSE)
     })
   }
+  if (is.null(samples_unc))
+    stop("getLaplaceSamples: Laplace sampling produced no draws (degenerate Hessian ",
+         "or no eta parameters).", call. = FALSE)
 
   beta0_cols  <- seq_along(beta0_idx)
   betaX_cols  <- length(beta0_idx) + seq_along(betaX_idx)
@@ -450,6 +458,89 @@ getEta <- function(fit_result, H = NULL, X = NULL, offset = NULL, n_samples = 10
 # Gamma-Based Change-Point Detection
 # =============================================================================
 
+# Shared engine for ONE basis (quantile or qss). Aligns the UI and Hotelling-T^2
+# tests AT THE CELL LEVEL. `cv` is n_iter x (ncell*r), cell (c,j) at column
+# (j-1)*ncell + c. Studentize each cell (z = mean/sd over the gamma draws), then
+# GLOBALLY whiten: z_tilde = R^{-1/2} z, which is ~ N(0, I) under H0. The
+# cell-specific statistic is the whitened squared z-score z_tilde^2 (chi-square_1).
+# Summing those squares gives Hotelling's T^2 at every scope:
+#   block   T^2_j = sum_{cells in block j} z_tilde^2   ~ chi-square_ncell
+#   overall T^2   = sum over ALL cells       z_tilde^2 ~ chi-square_(ncell*r) = z' R^-1 z
+# The UI test uses the SAME whitened cells but aggregates by MAX instead of SUM:
+#   block   UI_j  = max_{cells in block j} |z_tilde|,  overall UI = max over all cells.
+# After whitening the cells are independent, so the per-block p-values are exact
+# (chi-square for T^2; max-of-iid-normals for UI) and the block-level adjustment
+# family {raw, Bonferroni, Holm, BH, calibrated} is analytic (no Monte Carlo).
+.bqq_block_tests <- function(cv, ncell, r, alpha, want_ui, want_t2, whiten = TRUE, rowlab = NULL) {
+  cbar <- colMeans(cv)
+  S    <- stats::cov(cv)
+  sdv  <- sqrt(pmax(diag(S), 1e-12))
+  R    <- S / tcrossprod(sdv)
+  z_vec <- cbar / sdv
+  # Cell z-scores. whiten = TRUE: global symmetric (ZCA) whitening z_tilde = R^{-1/2} z,
+  # so cells are ~ N(0, I) (independent) under H0 and T^2 = sum z_tilde^2 = z' R^-1 z is
+  # the EXACT Hotelling statistic with exact chi-square / max-of-iid p-values. whiten =
+  # FALSE: cells are just self-standardized (z_tilde = z), so T^2 = sum z^2 is the naive
+  # sum of squared standardized z (cross-correlation ignored; p-values approximate).
+  if (whiten) {
+    # Moore-Penrose inverse square root (ginv-style): drop the numerically-null
+    # eigen-directions instead of flooring them, so a rank-deficient / collinear R
+    # (e.g. the highly correlated quantile gammas) does not blow up the whitening.
+    eig <- eigen((R + t(R)) / 2, symmetric = TRUE)
+    lam <- eig$values
+    tol <- max(lam) * sqrt(.Machine$double.eps)
+    inv_sqrt <- ifelse(lam > tol, 1 / sqrt(lam), 0)
+    Rinvsqrt <- eig$vectors %*% (inv_sqrt * t(eig$vectors))   # V diag(inv_sqrt) V'
+    zt  <- as.numeric(Rinvsqrt %*% z_vec)
+  } else {
+    zt  <- z_vec
+  }
+  z_mat    <- matrix(z_vec, ncell, r)
+  zt_mat   <- matrix(zt,    ncell, r)
+  cellstat <- zt_mat^2                      # cell-specific test: whitened squared z
+  if (!is.null(rowlab))
+    rownames(z_mat) <- rownames(zt_mat) <- rownames(cellstat) <- rowlab
+  blk <- lapply(seq_len(r), function(j) ((j - 1L) * ncell + 1L):(j * ncell))
+
+  out <- list(z = z_mat, z_white = zt_mat, cellstat = cellstat, R = R,
+              overall_t2 = NA_real_, overall_t2_p = NA_real_,
+              overall_ui = NA_real_, overall_ui_p = NA_real_,
+              ui = NULL, hotelling_t2 = NULL)
+
+  if (want_t2) {
+    W  <- vapply(blk, function(ix) sum(zt[ix]^2), 0)               # block T^2 = sum whitened z^2
+    p  <- stats::pchisq(W, df = ncell, lower.tail = FALSE)
+    c_ss <- stats::qchisq((1 - alpha)^(1 / r), df = ncell)         # single-step max over r blocks
+    out$hotelling_t2 <- .bqq_adj_family(W, p, alpha, c_ss)
+    out$overall_t2   <- sum(zt^2)
+    out$overall_t2_p <- stats::pchisq(out$overall_t2, df = ncell * r, lower.tail = FALSE)
+  }
+  if (want_ui) {
+    M  <- vapply(blk, function(ix) max(abs(zt[ix])), 0)            # block UI = max |whitened z|
+    p  <- 1 - (2 * stats::pnorm(M) - 1)^ncell
+    c_ss <- stats::qnorm((1 + (1 - alpha)^(1 / (ncell * r))) / 2)  # single-step max over all cells
+    out$ui <- .bqq_adj_family(M, p, alpha, c_ss)
+    out$overall_ui   <- max(abs(zt))
+    out$overall_ui_p <- 1 - (2 * stats::pnorm(out$overall_ui) - 1)^(ncell * r)
+  }
+  out
+}
+
+# Given a per-block statistic + per-block p-value, build the adjustment family over
+# the r blocks: raw / Bonferroni / Holm / BH on the p-values, plus `calibrated`, the
+# single-step max threshold on the statistic (block flagged if it exceeds c_ss).
+.bqq_adj_family <- function(stat, p, alpha, c_ss) {
+  ah <- stats::p.adjust(p, "holm")
+  ab <- stats::p.adjust(p, "bonferroni")
+  az <- stats::p.adjust(p, "BH")
+  list(stat = stat, pvalue = p, adjp_holm = ah, adjp_bonf = ab, adjp_bh = az, c_calib = c_ss,
+       sig_raw   = which(p  < alpha),
+       sig_holm  = which(ah < alpha),
+       sig_bonf  = which(ab < alpha),
+       sig_bh    = which(az < alpha),
+       sig_calib = which(stat > c_ss))
+}
+
 #' Detect change points using gamma coefficients
 #'
 #' Uses the H-matrix gamma coefficients directly for change-point detection.
@@ -472,37 +563,97 @@ getEta <- function(fit_result, H = NULL, X = NULL, offset = NULL, n_samples = 10
 #'   - "pinball": Observation that splits the block to minimize the equally weighted pinball (check) loss between the pre-block and block fitted quantile vectors (the same loss used for cross-validation)
 #' @param y Original data (required for signal_position = "max_deviation" or "pinball")
 #' @param eta Predictive quantiles array (required for signal_position = "max_deviation" or "pinball")
-#' @param n_samples Number of samples for Laplace approximation (only used for backward
-#'   compatibility when laplace_samples not available)
-#' @param alpha Significance level used for both the BQQ-Posterior tail-area
-#'   decision rule and the BQQ-Z asymptotic test.
-#' @param alternative Direction of the test: "two.sided" (default), "greater", or "less".
-#'   "greater" tests H1: gamma > 0 (positive shift). "less" tests H1: gamma < 0
-#'   (negative shift). Applies to both BQQ-Posterior and BQQ-Z.
-#' @param whiten Logical (default TRUE). If TRUE, apply whitening (decorrelation via
-#'   Cholesky decomposition of the posterior covariance) to gamma samples before
-#'   computing the BQQ-Posterior and BQQ-Z statistics. If FALSE, use raw gamma
-#'   samples directly.
-#' @param seed Random seed (only used when generating new Laplace samples)
-#' @return List with change-point detection results from two complementary
-#'   charting statistics: (i) BQQ-Posterior, the posterior tail-area test
-#'   (\code{pvalue_qj}, \code{adjp_*}, \code{significant_*}, \code{pvalue_posterior});
-#'   and (ii) BQQ-Z, the asymptotic Z-statistic test on the decorrelated samples
-#'   (\code{z_stat}, \code{pvalue_z_qj}, \code{adjp_z_*}, \code{significant_z_*},
-#'   \code{pvalue_z_block}). Both share the same multiple-testing correction
-#'   (jointly across the \eqn{m \times r} tests) and the same block-level
-#'   aggregation rule.
+#' @param laplace_n_samples Number of Laplace draws generated on the fly, used only
+#'   for backward compatibility when \code{fit_result$laplace_samples} is absent
+#'   (a normal MAP fit already carries the draws, so this is otherwise ignored).
+#' @param alpha Significance level for all cell and block decisions (two-sided).
+#' @param basis Character vector selecting which test family/families to compute:
+#'   \code{"quantile"} (the raw quantile block-gammas) and/or \code{"qss"} (the four
+#'   shape contrasts derived from those quantiles). Default is both; \code{"both"} is
+#'   also accepted. The QSS family is simply the quantile family rotated into an
+#'   interpretable, moment-aligned basis (L, S, Sk, K).
+#' @param statistic Character vector selecting how a block's cells are combined into a
+#'   block-level test. Both are built from the same globally-whitened cell z-scores
+#'   \eqn{\tilde z = R^{-1/2} z}: \code{"ui"} (default) is the union-intersection / max
+#'   test \eqn{\max_k |\tilde z_k|}, and \code{"hotelling_t2"} is the sum
+#'   \eqn{\sum_k \tilde z_k^2}. The cell-specific statistic \eqn{\tilde z_k^2} sums to
+#'   the block \eqn{T^2} (over the block's cells) and to the overall \eqn{T^2 = z'R^{-1}z}
+#'   (over all cells). \code{"cell_max"} is accepted as a deprecated alias for \code{"ui"}.
+#'   The legacy \code{calibrated}/\code{block_test}/\code{qss} flags are derived from
+#'   \code{basis} and \code{statistic} unless passed explicitly.
+#' @param whiten Logical (default TRUE). If TRUE, whiten the cells globally
+#'   (\eqn{\tilde z = R^{-1/2} z}) so they are independent under H0 — the UI and
+#'   Hotelling \eqn{T^2} then have exact (chi-square / max-of-iid) p-values and the
+#'   \eqn{T^2} is the exact \eqn{z' R^{-1} z}. If FALSE, the cells are only
+#'   self-standardized (\eqn{\tilde z = z}); the \eqn{T^2} becomes the naive sum of
+#'   squared standardized z (cross-correlation ignored) and the p-values are
+#'   approximate. Whitening decorrelates but mixes the interpretable cells.
+#' @param seed Random seed (only used when generating new Laplace samples).
+#' @param calibrated Logical or NULL (default NULL = derive). If TRUE, run the UI test
+#'   on the quantile basis; \code{significant_calib} is its calibrated (single-step max)
+#'   member of the adjustment family.
+#' @param block_test Logical or NULL (default NULL = derive). If TRUE, run the Hotelling
+#'   \eqn{T^2} on the quantile basis (\code{significant_wald_*}, \code{W_block}).
+#' @param qss Logical or NULL (default NULL = derive). If TRUE, run the requested test(s)
+#'   on the QSS basis — the four shape contrasts L = \eqn{\gamma_{.5}}, S =
+#'   \eqn{\gamma_{.75}-\gamma_{.25}}, Sk = \eqn{\gamma_{.75}+\gamma_{.25}-2\gamma_{.5}},
+#'   K = \eqn{(\gamma_{.975}-\gamma_{.025}) - \kappa_0(\gamma_{.75}-\gamma_{.25})}
+#'   (\code{significant_qss_*}, \code{significant_qss_t2_*}). \eqn{\kappa_0} falls back to
+#'   the standard-normal tail/IQR ratio when the intercept posterior is unavailable.
+#'   Requires the five-quantile grid (0.025, 0.25, 0.5, 0.75, 0.975).
+#' @param n_calib Retained for backward compatibility; unused (the whitened tests are
+#'   analytic and need no Monte-Carlo calibration).
+#' @return A list. \code{tests[[basis]]} (\code{"quantile"} / \code{"qss"}) carries
+#'   \code{$z} (studentized cells), \code{$z_white} (whitened), \code{$cellstat}
+#'   (whitened \eqn{\tilde z^2}), and \code{$ui} / \code{$hotelling_t2} — each with
+#'   \code{stat}, \code{pvalue}, \code{adjp_holm/bonf/bh}, \code{c_calib}, and
+#'   \code{sig_raw/holm/bonf/bh/calib} over the r blocks — plus \code{$overall_ui(_p)}
+#'   and \code{$overall_t2(_p)}. \code{detected_blocks} carries the significance flags
+#'   for all four charts (\code{significant_*}, \code{significant_wald_*},
+#'   \code{significant_qss_*}, \code{significant_qss_t2_*}). Flat aliases and
+#'   \code{basis}/\code{statistic}/\code{k0_hat} are also returned.
 #' @export
 detectChangepoints_gamma <- function(fit_result, taus, l, w,
                                      signal_position = c("first", "last", "middle", "max_deviation", "pinball"),
                                      y = NULL, eta = NULL,
-                                     n_samples = 1000, alpha = 0.05,
-                                     alternative = "two.sided",
+                                     laplace_n_samples = 1000, alpha = 0.05,
+                                     basis = c("quantile", "qss"),
+                                     statistic = c("ui", "hotelling_t2"),
                                      whiten = TRUE,
+                                     calibrated = NULL, block_test = NULL, qss = NULL,
+                                     n_calib = 2000L,
                                      seed = NULL) {
 
   # Validate signal_position argument
   signal_position <- match.arg(signal_position)
+
+  # ---- Two-family / two-statistic API ---------------------------------------
+  # `basis`     : which test family to run — "quantile" (the raw quantile gammas)
+  #               and/or "qss" (the four shape contrasts). Default = both.
+  # `statistic` : how cells are combined into a block-level test — "cell_max"
+  #               (default; the max-type adjustment family, higher power on sparse
+  #               single-moment shifts) and/or "hotelling_t2" (the omnibus quadratic
+  #               alternative). Default = cell_max only.
+  # The legacy flags calibrated/block_test/qss are DERIVED from these unless the
+  # caller passes them explicitly (backward compatibility).
+  if (length(basis) == 1L && identical(basis, "both")) basis <- c("quantile", "qss")
+  basis     <- match.arg(basis, c("quantile", "qss"), several.ok = TRUE)
+  statistic <- if (missing(statistic)) "ui" else statistic
+  statistic[statistic == "cell_max"] <- "ui"          # backward-compat alias
+  statistic <- match.arg(statistic, c("ui", "hotelling_t2"), several.ok = TRUE)
+  want_ui <- "ui"           %in% statistic
+  want_t2 <- "hotelling_t2" %in% statistic
+  # Derive the legacy flags from basis x statistic unless the caller sets them.
+  if (is.null(calibrated)) calibrated <- ("quantile" %in% basis) && want_ui
+  if (is.null(block_test)) block_test <- ("quantile" %in% basis) && want_t2
+  if (is.null(qss))        qss        <- ("qss" %in% basis)
+  # Per-family / per-statistic gates (respect explicit legacy overrides).
+  do_q_ui     <- isTRUE(calibrated)
+  do_q_t2     <- isTRUE(block_test)
+  do_quantile <- do_q_ui || do_q_t2
+  do_qss_fam  <- isTRUE(qss)
+  do_qss_ui   <- do_qss_fam && want_ui
+  do_qss_t2   <- do_qss_fam && want_t2
 
   m <- length(taus)
 
@@ -537,7 +688,7 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
     } else if (!is.null(fit_result$map)) {
       # Backward compatibility: generate samples on the fly
       laplace <- getLaplaceSamples(fit_result$map, fit_result$hessian,
-                                   n_samples = n_samples, seed = seed)
+                                   n_samples = laplace_n_samples, seed = seed)
       gamma_samples <- laplace$gamma
     } else {
       stop("fit_method is 'map' but no laplace_samples or MAP estimates found")
@@ -547,6 +698,16 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
     }
   } else {
     stop("Unknown fit_method: ", fit_method)
+  }
+
+  # Beta (intercept + covariate) samples — used only for the QSS kappa0 baseline
+  # tail/IQR ratio (opt-in via qss = TRUE). Absent => theoretical-normal fallback.
+  beta_samples <- NULL
+  if (isTRUE(qss)) {
+    beta_samples <- tryCatch({
+      if (fit_method %in% c("mcmc", "map_mcmc")) rstan::extract(fit_result$fit)$beta
+      else fit_result$laplace_samples$beta
+    }, error = function(e) NULL)
   }
 
   # Coherent point estimate of the fitted quantiles (m x n) for within-block
@@ -567,150 +728,119 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
   r <- dim(gamma_samples)[3]  # number of H columns
 
   # ============================================================
-  # Step 1: Decorrelation via Whitening Transformation
+  # Two families (quantile / qss) x two tests (ui / hotelling_t2), ALIGNED AT THE
+  # CELL LEVEL. Each family's cells are studentized then globally whitened; the
+  # cell-specific statistic is the whitened squared z (chi-square_1). Hotelling T^2
+  # SUMS those squares (block and overall); the UI takes their MAX. Both feed the
+  # same block-level adjustment family {raw, Bonferroni, Holm, BH, calibrated}.
+  # See .bqq_block_tests().
   # ============================================================
-  Sigma <- NULL
-  Sigma_inv_sqrt <- NULL
+  q_res <- NULL; qss_res <- NULL; k0_hat <- NA_real_
 
-  if (whiten) {
-    # Vectorize gamma: reshape from (n_iter x m x r) to (n_iter x d) where d = m * r
-    d <- m * r
-    gamma_vec <- matrix(NA, n_iter, d)
-    for (s in 1:n_iter) {
-      gamma_vec[s, ] <- as.vector(gamma_samples[s, , ])
-    }
+  if (do_quantile) {
+    cvq <- matrix(NA_real_, n_iter, m * r)          # cell (q,j) -> (j-1)*m + q
+    for (j in seq_len(r)) cvq[, ((j - 1L) * m + 1L):(j * m)] <- gamma_samples[, , j]
+    q_res <- .bqq_block_tests(cvq, m, r, alpha, do_q_ui, do_q_t2, whiten, format(taus))
+  }
 
-    # Compute posterior covariance matrix
-    Sigma <- cov(gamma_vec)
-
-    # Whitening transformation using Cholesky (faster) or eigendecomposition (fallback)
-    ridge <- 1e-8 * diag(d)
-    Sigma_reg <- Sigma + ridge
-
-    chol_result <- tryCatch({
-      chol(Sigma_reg)
-    }, error = function(e) {
-      warning("Cholesky decomposition failed, falling back to eigendecomposition")
-      NULL
-    })
-
-    if (!is.null(chol_result)) {
-      R <- chol_result
-      gamma_tilde_vec <- t(backsolve(R, t(gamma_vec), transpose = TRUE))
-      Sigma_inv_sqrt <- backsolve(R, diag(d))
+  if (do_qss_fam) {
+    if (m < 5) {
+      warning("qss basis requires the five-quantile grid ",
+              "(0.025, 0.25, 0.5, 0.75, 0.975); skipping the QSS family.")
     } else {
-      eig <- eigen(Sigma_reg, symmetric = TRUE)
-      eigenvalues <- pmax(eig$values, 1e-8)
-      eigenvectors <- eig$vectors
-      Sigma_inv_sqrt <- eigenvectors %*% diag(1 / sqrt(eigenvalues)) %*% t(eigenvectors)
-      gamma_tilde_vec <- t(Sigma_inv_sqrt %*% t(gamma_vec))
-    }
-
-    # Reshape back to (n_iter x m x r)
-    gamma_tilde <- array(NA, dim = c(n_iter, m, r))
-    for (s in 1:n_iter) {
-      gamma_tilde[s, , ] <- matrix(gamma_tilde_vec[s, ], nrow = m, ncol = r)
-    }
-  } else {
-    # No whitening: use raw gamma samples directly
-    gamma_tilde <- gamma_samples
-  }
-
-  # ============================================================
-  # Step 2: Per-Quantile, Per-Block Test Statistic
-  # ============================================================
-  # T_{q,j}^{(s)} = gamma_tilde[s, q, j]
-  # When whiten=TRUE, gamma_tilde is decorrelated.
-  # When whiten=FALSE, gamma_tilde is the raw gamma.
-
-  # Null threshold: Under H0 (no shift), gamma = 0
-  # We test against 0, not a data-driven threshold
-  epsilon <- rep(0, m)  # Null hypothesis: gamma = 0
-
-  # ============================================================
-  # Step 3: Per-Quantile, Per-Block Bayesian Posterior P-Values
-  # ============================================================
-  # Compute posterior p-value: P(gamma_tilde <= 0 | data) for each (q, j)
-  # This tests whether the posterior mass is above or below 0
-  pvalue_star <- matrix(NA, m, r)
-  for (q in 1:m) {
-    for (j in 1:r) {
-      pvalue_star[q, j] <- mean(gamma_tilde[, q, j] <= 0)
+      qi <- vapply(c(0.025, 0.25, 0.5, 0.75, 0.975),
+                   function(t) which.min(abs(taus - t)), integer(1))
+      # kappa0: estimated baseline tail/IQR ratio from the intercept quantiles;
+      # standard-normal ratio (~2.906) as fallback when beta is unavailable.
+      k0_hat <- (qnorm(0.975) - qnorm(0.025)) / (qnorm(0.75) - qnorm(0.25))
+      b0 <- tryCatch(
+        if (!is.null(beta_samples) && length(dim(beta_samples)) == 3)
+          beta_samples[, , 1] else beta_samples,
+        error = function(e) NULL)
+      if (!is.null(b0) && !is.null(dim(b0)) && ncol(b0) >= max(qi)) {
+        val <- mean((b0[, qi[5]] - b0[, qi[1]]) /
+                      pmax(b0[, qi[4]] - b0[, qi[2]], 0.02), na.rm = TRUE)
+        if (is.finite(val) && val > 0) k0_hat <- val
+      }
+      cvc <- matrix(NA_real_, n_iter, 4L * r)         # cell (c,j) -> (j-1)*4 + c
+      for (j in seq_len(r)) {
+        g <- gamma_samples[, , j]
+        cvc[, ((j - 1L) * 4L + 1L):(j * 4L)] <- cbind(
+          g[, qi[3]],                                           # L : median
+          g[, qi[4]] - g[, qi[2]],                              # S : IQR
+          g[, qi[4]] + g[, qi[2]] - 2 * g[, qi[3]],             # Sk: Bowley numerator
+          (g[, qi[5]] - g[, qi[1]]) - k0_hat * (g[, qi[4]] - g[, qi[2]]))  # K
+      }
+      qss_res <- .bqq_block_tests(cvc, 4L, r, alpha, do_qss_ui, do_qss_t2, whiten,
+                                  c("L", "S", "Sk", "K"))
     }
   }
 
-  # Directional p-values (respecting the 'alternative' parameter)
-  # Two-sided: reject if posterior is concentrated far from 0 (either side)
-  # Greater: reject if posterior is concentrated above 0 (small pvalue_star)
-  # Less: reject if posterior is concentrated below 0 (large pvalue_star)
-  if (alternative == "two.sided") {
-    pvalue_qj <- 2 * pmin(pvalue_star, 1 - pvalue_star)
-  } else if (alternative == "greater") {
-    # H1: gamma > 0, so p-value = P(gamma <= 0 | data) = pvalue_star
-    pvalue_qj <- pvalue_star
-  } else if (alternative == "less") {
-    # H1: gamma < 0, so p-value = P(gamma >= 0 | data) = 1 - pvalue_star
-    pvalue_qj <- 1 - pvalue_star
-  } else {
-    stop("Unknown alternative: ", alternative, ". Must be 'two.sided', 'less', or 'greater'.")
-  }
+  # nested, fully-symmetric results: tests[[basis]] has $z, $z_white, $cellstat,
+  # $ui, $hotelling_t2 (each with stat/pvalue/adjp_*/sig_*), and $overall_{ui,t2}(_p).
+  keep <- c("z", "z_white", "cellstat", "ui", "hotelling_t2",
+            "overall_ui", "overall_ui_p", "overall_t2", "overall_t2_p")
+  tests <- list(quantile = if (!is.null(q_res)) q_res[keep] else NULL,
+                qss      = if (!is.null(qss_res)) qss_res[keep] else NULL)
 
-  # Apply multiple testing corrections across ALL m*r p-values jointly
-  pvalue_vec <- as.vector(pvalue_qj)  # length m*r (column-major: q varies fastest)
-  adjp_holm_vec <- p.adjust(pvalue_vec, method = "holm")
-  adjp_bonf_vec <- p.adjust(pvalue_vec, method = "bonferroni")
-  adjp_bh_vec <- p.adjust(pvalue_vec, method = "BH")
-
-  # Reshape back to m x r matrices
-  adjp_holm <- matrix(adjp_holm_vec, m, r)
-  adjp_bonf <- matrix(adjp_bonf_vec, m, r)
-  adjp_bh <- matrix(adjp_bh_vec, m, r)
-
-  # Block-level decision: block j significant if ANY quantile significant after correction
-  sig_blocks_raw <- which(apply(pvalue_qj < alpha, 2, any))
-  significant_holm <- which(apply(adjp_holm < alpha, 2, any))
-  significant_bonf <- which(apply(adjp_bonf < alpha, 2, any))
-  significant_bh <- which(apply(adjp_bh < alpha, 2, any))
-
-  # Per-block summary p-value: minimum across quantiles (for backward compat)
-  pvalue_posterior <- apply(pvalue_qj, 2, min)
-
-  # ============================================================
-  # Step 4: Per-Quantile, Per-Block Frequentist Z-Test (BQQ-Z)
-  # ============================================================
-  # z_{q,j} = mean(gamma_tilde_{q,j}) / sd(gamma_tilde_{q,j})
-  z_stat <- matrix(NA, m, r)
-  for (q in 1:m) {
-    for (j in 1:r) {
-      gt_mean <- mean(gamma_tilde[, q, j])
-      gt_sd <- sd(gamma_tilde[, q, j])
-      z_stat[q, j] <- if (gt_sd > 1e-12) gt_mean / gt_sd else 0
-    }
-  }
-
-  # Z-test p-values (respecting 'alternative')
-  if (alternative == "two.sided") {
-    pvalue_z_qj <- 2 * (1 - pnorm(abs(z_stat)))
-  } else if (alternative == "greater") {
-    pvalue_z_qj <- 1 - pnorm(z_stat)
-  } else if (alternative == "less") {
-    pvalue_z_qj <- pnorm(z_stat)
-  }
-
-  # Multiple testing corrections for Z-test
-  pvalue_z_vec <- as.vector(pvalue_z_qj)
-  adjp_z_holm <- matrix(p.adjust(pvalue_z_vec, method = "holm"), m, r)
-  adjp_z_bonf <- matrix(p.adjust(pvalue_z_vec, method = "bonferroni"), m, r)
-  adjp_z_bh <- matrix(p.adjust(pvalue_z_vec, method = "BH"), m, r)
-
-  # Block-level decisions for Z-test
-  significant_z_raw  <- which(apply(pvalue_z_qj < alpha, 2, any))  # no correction (mirrors significant_raw)
-  significant_z_holm <- which(apply(adjp_z_holm < alpha, 2, any))
-  significant_z_bonf <- which(apply(adjp_z_bonf < alpha, 2, any))
-  significant_z_bh <- which(apply(adjp_z_bh < alpha, 2, any))
-
-  # Per-block summary p-value for Z-test
-  pvalue_z_block <- apply(pvalue_z_qj, 2, min)
+  # ---- flat aliases (NA / empty when a family or statistic is off) ----
+  gu <- function(res, st, f, d) if (!is.null(res) && !is.null(res[[st]]) && !is.null(res[[st]][[f]])) res[[st]][[f]] else d
+  gz <- function(res, f, d) if (!is.null(res) && !is.null(res[[f]])) res[[f]] else d
+  ei <- integer(0); NAr <- rep(NA_real_, r)
+  # quantile — cells
+  z_raw    <- gz(q_res, "z", NULL); z_white <- gz(q_res, "z_white", NULL); cellstat <- gz(q_res, "cellstat", NULL)
+  # quantile — UI
+  ui_block          <- gu(q_res, "ui", "stat", NAr)
+  pvalue_ui         <- gu(q_res, "ui", "pvalue", NAr)
+  adjp_holm         <- gu(q_res, "ui", "adjp_holm", NULL)
+  adjp_bonf         <- gu(q_res, "ui", "adjp_bonf", NULL)
+  adjp_bh           <- gu(q_res, "ui", "adjp_bh", NULL)
+  c_calib           <- gu(q_res, "ui", "c_calib", NA_real_)
+  sig_blocks_raw    <- gu(q_res, "ui", "sig_raw", ei)
+  significant_holm  <- gu(q_res, "ui", "sig_holm", ei)
+  significant_bonf  <- gu(q_res, "ui", "sig_bonf", ei)
+  significant_bh    <- gu(q_res, "ui", "sig_bh", ei)
+  significant_calib <- gu(q_res, "ui", "sig_calib", ei)
+  # quantile — Hotelling T^2
+  W_block                <- gu(q_res, "hotelling_t2", "stat", NAr)
+  pvalue_wald            <- gu(q_res, "hotelling_t2", "pvalue", NAr)
+  adjp_wald_holm         <- gu(q_res, "hotelling_t2", "adjp_holm", NULL)
+  c_wald_calib           <- gu(q_res, "hotelling_t2", "c_calib", NA_real_)
+  significant_wald_raw   <- gu(q_res, "hotelling_t2", "sig_raw", ei)
+  significant_wald_holm  <- gu(q_res, "hotelling_t2", "sig_holm", ei)
+  significant_wald_bonf  <- gu(q_res, "hotelling_t2", "sig_bonf", ei)
+  significant_wald_bh    <- gu(q_res, "hotelling_t2", "sig_bh", ei)
+  significant_wald_calib <- gu(q_res, "hotelling_t2", "sig_calib", ei)
+  overall_t2   <- gz(q_res, "overall_t2", NA_real_);   overall_t2_p <- gz(q_res, "overall_t2_p", NA_real_)
+  overall_ui   <- gz(q_res, "overall_ui", NA_real_);   overall_ui_p <- gz(q_res, "overall_ui_p", NA_real_)
+  # qss — cells
+  z_qss    <- gz(qss_res, "z", NULL); z_white_qss <- gz(qss_res, "z_white", NULL); cellstat_qss <- gz(qss_res, "cellstat", NULL)
+  qss_stat <- if (!is.null(z_qss)) max(abs(z_qss)) else NA_real_   # raw studentized global max
+  # qss — UI
+  ui_block_qss          <- gu(qss_res, "ui", "stat", NAr)
+  pvalue_qss            <- gu(qss_res, "ui", "pvalue", NAr)
+  adjp_qss_holm         <- gu(qss_res, "ui", "adjp_holm", NULL)
+  adjp_qss_bonf         <- gu(qss_res, "ui", "adjp_bonf", NULL)
+  adjp_qss_bh           <- gu(qss_res, "ui", "adjp_bh", NULL)
+  c_qss                 <- gu(qss_res, "ui", "c_calib", NA_real_)
+  significant_qss_raw   <- gu(qss_res, "ui", "sig_raw", ei)
+  significant_qss_holm  <- gu(qss_res, "ui", "sig_holm", ei)
+  significant_qss_bonf  <- gu(qss_res, "ui", "sig_bonf", ei)
+  significant_qss_bh    <- gu(qss_res, "ui", "sig_bh", ei)
+  significant_qss_calib <- gu(qss_res, "ui", "sig_calib", ei)
+  # qss — Hotelling T^2
+  W_qss                    <- gu(qss_res, "hotelling_t2", "stat", NAr)
+  pvalue_qss_t2            <- gu(qss_res, "hotelling_t2", "pvalue", NAr)
+  adjp_qss_t2_holm         <- gu(qss_res, "hotelling_t2", "adjp_holm", NULL)
+  c_qss_t2                 <- gu(qss_res, "hotelling_t2", "c_calib", NA_real_)
+  significant_qss_t2_raw   <- gu(qss_res, "hotelling_t2", "sig_raw", ei)
+  significant_qss_t2_holm  <- gu(qss_res, "hotelling_t2", "sig_holm", ei)
+  significant_qss_t2_bonf  <- gu(qss_res, "hotelling_t2", "sig_bonf", ei)
+  significant_qss_t2_bh    <- gu(qss_res, "hotelling_t2", "sig_bh", ei)
+  significant_qss_t2_calib <- gu(qss_res, "hotelling_t2", "sig_calib", ei)
+  significant_qss_t2       <- significant_qss_t2_calib   # back-compat alias (calibrated member)
+  overall_t2_qss   <- gz(qss_res, "overall_t2", NA_real_); overall_t2_qss_p <- gz(qss_res, "overall_t2_p", NA_real_)
+  overall_ui_qss   <- gz(qss_res, "overall_ui", NA_real_); overall_ui_qss_p <- gz(qss_res, "overall_ui_p", NA_real_)
 
   # Convert H column to observation number.
   # For combined designs (e.g., sustained + isolated + drift), H has multiple
@@ -813,19 +943,30 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
   # Compile results
   detected_blocks <- data.frame(
     h_col = 1:r,
-    # Block-level summary p-value (min across quantiles)
-    pvalue_posterior = pvalue_posterior,
-    pvalue_z = pvalue_z_block,
-    # Block-level significance flags — BQQ-Posterior (after joint m*r correction)
-    significant_raw = 1:r %in% sig_blocks_raw,
-    significant_holm = 1:r %in% significant_holm,
-    significant_bonf = 1:r %in% significant_bonf,
-    significant_bh = 1:r %in% significant_bh,
-    # Block-level significance flags — BQQ-Z (raw, then joint m*r corrections)
-    significant_z_raw = 1:r %in% significant_z_raw,
-    significant_z_holm = 1:r %in% significant_z_holm,
-    significant_z_bonf = 1:r %in% significant_z_bonf,
-    significant_z_bh = 1:r %in% significant_z_bh
+    # Quantile basis - UI test (max of whitened |z|), full adjustment family
+    significant_raw   = 1:r %in% sig_blocks_raw,
+    significant_holm  = 1:r %in% significant_holm,
+    significant_bonf  = 1:r %in% significant_bonf,
+    significant_bh    = 1:r %in% significant_bh,
+    significant_calib = 1:r %in% significant_calib,
+    # Quantile basis - Hotelling T^2 (sum of whitened z^2), full adjustment family
+    significant_wald_raw   = 1:r %in% significant_wald_raw,
+    significant_wald_holm  = 1:r %in% significant_wald_holm,
+    significant_wald_bonf  = 1:r %in% significant_wald_bonf,
+    significant_wald_bh    = 1:r %in% significant_wald_bh,
+    significant_wald_calib = 1:r %in% significant_wald_calib,
+    # QSS basis - UI test
+    significant_qss_raw   = 1:r %in% significant_qss_raw,
+    significant_qss_holm  = 1:r %in% significant_qss_holm,
+    significant_qss_bonf  = 1:r %in% significant_qss_bonf,
+    significant_qss_bh    = 1:r %in% significant_qss_bh,
+    significant_qss_calib = 1:r %in% significant_qss_calib,
+    # QSS basis - Hotelling T^2
+    significant_qss_t2_raw   = 1:r %in% significant_qss_t2_raw,
+    significant_qss_t2_holm  = 1:r %in% significant_qss_t2_holm,
+    significant_qss_t2_bonf  = 1:r %in% significant_qss_t2_bonf,
+    significant_qss_t2_bh    = 1:r %in% significant_qss_t2_bh,
+    significant_qss_t2_calib = 1:r %in% significant_qss_t2_calib
   )
 
   # Add observation ranges
@@ -837,78 +978,54 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
     get_signal_obs(j, signal_position, y, eta, taus, eta_point)
   })
 
-  # First detection — BQQ-Posterior (using signal_obs rather than obs_start)
-  first_signal_holm <- if (length(significant_holm) > 0) {
-    first_sig_block <- min(significant_holm)
-    detected_blocks$signal_obs[first_sig_block]
-  } else NA
-
-  first_signal_bonf <- if (length(significant_bonf) > 0) {
-    first_sig_block <- min(significant_bonf)
-    detected_blocks$signal_obs[first_sig_block]
-  } else NA
-
-  first_signal_bh <- if (length(significant_bh) > 0) {
-    first_sig_block <- min(significant_bh)
-    detected_blocks$signal_obs[first_sig_block]
-  } else NA
-
-  # First detection — BQQ-Z
-  first_signal_z_holm <- if (length(significant_z_holm) > 0) {
-    detected_blocks$signal_obs[min(significant_z_holm)]
-  } else NA
-
-  first_signal_z_bonf <- if (length(significant_z_bonf) > 0) {
-    detected_blocks$signal_obs[min(significant_z_bonf)]
-  } else NA
-
-  first_signal_z_bh <- if (length(significant_z_bh) > 0) {
-    detected_blocks$signal_obs[min(significant_z_bh)]
-  } else NA
+  # First detection (using signal_obs) for the quantile Holm and calibrated members.
+  first_sig <- function(idx) if (length(idx) > 0) detected_blocks$signal_obs[min(idx)] else NA
+  first_signal_holm  <- first_sig(significant_holm)
+  first_signal_calib <- first_sig(significant_calib)
 
   list(
     detected_blocks = detected_blocks,
-    # Decorrelated gamma samples (n_iter x m x r)
-    gamma_tilde = gamma_tilde,
-    # BQQ-Posterior: per-quantile, per-block p-value matrices (m x r)
-    pvalue_star = pvalue_star,
-    pvalue_qj = pvalue_qj,
-    adjp_holm = adjp_holm,
-    adjp_bonf = adjp_bonf,
-    adjp_bh = adjp_bh,
-    # BQQ-Z: per-quantile, per-block Z-statistics and p-value matrices (m x r)
-    z_stat = z_stat,
-    pvalue_z_qj = pvalue_z_qj,
-    adjp_z_holm = adjp_z_holm,
-    adjp_z_bonf = adjp_z_bonf,
-    adjp_z_bh = adjp_z_bh,
-    # Per-quantile null threshold
-    epsilon = epsilon,
-    # Whitening matrix used for decorrelation
-    Sigma_inv_sqrt = Sigma_inv_sqrt,
-    # Posterior covariance matrix
-    Sigma = Sigma,
-    # Block-level summary — BQQ-Posterior
-    pvalue_posterior = pvalue_posterior,
-    n_significant_holm = length(significant_holm),
-    n_significant_bonf = length(significant_bonf),
-    n_significant_bh = length(significant_bh),
-    first_signal_holm = first_signal_holm,
-    first_signal_bonf = first_signal_bonf,
-    first_signal_bh = first_signal_bh,
-    # Block-level summary — BQQ-Z
-    pvalue_z_block = pvalue_z_block,
-    n_significant_z_holm = length(significant_z_holm),
-    n_significant_z_bonf = length(significant_z_bonf),
-    n_significant_z_bh = length(significant_z_bh),
-    first_signal_z_holm = first_signal_z_holm,
-    first_signal_z_bonf = first_signal_z_bonf,
-    first_signal_z_bh = first_signal_z_bh,
-    # Configuration
-    signal_position = signal_position,
-    alternative = alternative,
-    alpha = alpha,
-    whiten = whiten
+    # Nested, fully-symmetric results: tests[[basis]] carries $z (studentized),
+    # $z_white (whitened), $cellstat (whitened z^2 = cell-level Hotelling), and
+    # $ui / $hotelling_t2 (each: stat, pvalue, adjp_holm/bonf/bh, c_calib, sig_*),
+    # plus $overall_ui(_p) and $overall_t2(_p).
+    tests = tests,
+    # ---- quantile basis (flat aliases) ----
+    z_raw = z_raw, z_white = z_white, cellstat = cellstat,
+    ui_block = ui_block, pvalue_ui = pvalue_ui,
+    adjp_holm = adjp_holm, adjp_bonf = adjp_bonf, adjp_bh = adjp_bh, c_calib = c_calib,
+    significant_raw = sig_blocks_raw, significant_holm = significant_holm,
+    significant_bonf = significant_bonf, significant_bh = significant_bh,
+    significant_calib = significant_calib,
+    n_significant_holm = length(significant_holm), n_significant_calib = length(significant_calib),
+    first_signal_holm = first_signal_holm, first_signal_calib = first_signal_calib,
+    W_block = W_block, pvalue_wald = pvalue_wald, adjp_wald_holm = adjp_wald_holm,
+    c_wald_calib = c_wald_calib,
+    significant_wald_raw = significant_wald_raw, significant_wald_holm = significant_wald_holm,
+    significant_wald_bonf = significant_wald_bonf, significant_wald_bh = significant_wald_bh,
+    significant_wald_calib = significant_wald_calib,
+    overall_ui = overall_ui, overall_ui_p = overall_ui_p,
+    overall_t2 = overall_t2, overall_t2_p = overall_t2_p,
+    # ---- qss basis (flat aliases) ----
+    z_qss = z_qss, z_white_qss = z_white_qss, cellstat_qss = cellstat_qss, qss_stat = qss_stat,
+    ui_block_qss = ui_block_qss, pvalue_qss = pvalue_qss,
+    adjp_qss_holm = adjp_qss_holm, adjp_qss_bonf = adjp_qss_bonf, adjp_qss_bh = adjp_qss_bh, c_qss = c_qss,
+    significant_qss_raw = significant_qss_raw, significant_qss_holm = significant_qss_holm,
+    significant_qss_bonf = significant_qss_bonf, significant_qss_bh = significant_qss_bh,
+    significant_qss_calib = significant_qss_calib,
+    n_significant_qss_holm = length(significant_qss_holm), n_significant_qss_calib = length(significant_qss_calib),
+    W_qss = W_qss, pvalue_qss_t2 = pvalue_qss_t2, adjp_qss_t2_holm = adjp_qss_t2_holm, c_qss_t2 = c_qss_t2,
+    significant_qss_t2_raw = significant_qss_t2_raw, significant_qss_t2_holm = significant_qss_t2_holm,
+    significant_qss_t2_bonf = significant_qss_t2_bonf, significant_qss_t2_bh = significant_qss_t2_bh,
+    significant_qss_t2_calib = significant_qss_t2_calib,
+    significant_qss_t2 = significant_qss_t2, n_significant_qss_t2 = length(significant_qss_t2),
+    overall_ui_qss = overall_ui_qss, overall_ui_qss_p = overall_ui_qss_p,
+    overall_t2_qss = overall_t2_qss, overall_t2_qss_p = overall_t2_qss_p,
+    k0_hat = k0_hat,
+    # ---- configuration ----
+    signal_position = signal_position, alpha = alpha,
+    basis = basis, statistic = statistic, whiten = whiten,
+    calibrated = calibrated, block_test = block_test, qss = qss
   )
 }
 
@@ -985,4 +1102,5 @@ getQSS <- function(eta, taus = c(0.025, 0.25, 0.5, 0.75, 0.975)) {
 
   qss
 }
+
 
