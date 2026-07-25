@@ -24,8 +24,8 @@ The BQQ methodology monitors a process by fitting a multi-quantile regression mo
 - **Interquantile shrinkage** that borrows strength across quantiles to stabilize outer-quantile estimates
 - **Bayesian LASSO-type priors** on both user covariates and shift coefficients, with the intercept retained under a separate weakly informative prior
 - **Non-crossing penalties** to maintain quantile monotonicity
-- **Gamma-coefficient decorrelation-based** change-point detection
-- **Quantile Shape Statistics (QSS)**: location, scale, skewness, and kurtosis derived from the fitted quantile function
+- **Change-point detection** by posterior whitening of the shift coefficients followed by union-intersection (UI) and Hotelling $T^2$ block tests, with family-wise error (FAP) control across blocks — run on both the raw quantile basis and the QSS shape basis
+- **Quantile Shape Statistics (QSS)**: location, scale, skewness, and kurtosis derived from the fitted quantile function, for both distributional profiling and shape-shift inference
 - **Cross-validation** for hyperparameter tuning (non-crossing penalty, LASSO rate, IQ shrinkage rate)
 - **Visualization** functions for quantile charts, control charts, QSS time series, and detection barplots
 
@@ -60,13 +60,16 @@ fit <- getModel(y, taus, H = H, w = w,
 # 4. Extract predictive quantiles
 eta <- getEta(fit, H = H)
 
-# 5. Gamma-based change-point detection (decorrelation approach)
-gamma_result <- detectChangepoints_gamma(fit, taus = taus, l = l, w = w)
-plot_gamma_detection(gamma_result, true_shift = shift_start)
+# 5. Change-point detection: posterior whitening + union-intersection (UI) and
+#    Hotelling T^2 block tests, on the quantile and QSS (shape) bases
+detection <- detectChangepoints_gamma(fit, taus = taus, l = l, w = w,
+                                      basis = c("quantile", "qss"),
+                                      statistic = c("ui", "hotelling_t2"))
+plotGammaHeatmap(fit, detection)              # block-shift heatmap with significance borders
 
-# 6. Quantile Shape Statistics
-qss <- getQSS(eta, taus = taus)
-plot_qss_series(qss, w = w, true_shift = shift_start)
+# 6. Distributional profiling via Quantile Shape Statistics (QSS) over time
+plotQSSProcess(fit, H = H, detection = detection)   # location/scale/skewness/kurtosis bands
+plotQuantileProcess(fit)                            # fitted quantile process
 ```
 
 ## Core Functions
@@ -90,8 +93,8 @@ plot_qss_series(qss, w = w, true_shift = shift_start)
 
 | Function | Description |
 |---|---|
-| `getQSS()` | Compute Quantile Shape Statistics from predictive quantiles |
-| `detectChangepoints_gamma()` | Decorrelation-based change-point detection using gamma coefficients |
+| `getQSS()` | Compute Quantile Shape Statistics (location, scale, skewness, kurtosis) from predictive quantiles |
+| `detectChangepoints_gamma()` | Change-point detection: posterior whitening + UI / Hotelling $T^2$ block tests on the quantile and QSS bases, with FAP control and multiplicity adjustment |
 
 ### Cross-Validation
 
@@ -105,9 +108,9 @@ plot_qss_series(qss, w = w, true_shift = shift_start)
 
 | Function | Description |
 |---|---|
-| `plot_quantile_chart()` | Fitted quantile curves overlaid on data |
-| `plot_gamma_detection()` | Block-level significance barplot from gamma detection |
-| `plot_qss_series()` | QSS time series (location, scale, skewness, kurtosis) with posterior bands |
+| `plotQuantileProcess()` | Fitted quantile process (the five quantile curves over time) |
+| `plotGammaHeatmap()` | Block-shift heatmap (quantile and/or QSS panels) with significance borders from the UI / $T^2$ detection |
+| `plotQSSProcess()` | QSS distributional profiling over time (location, scale, skewness, kurtosis) with posterior credible bands and change onsets |
 
 ## Model Details
 

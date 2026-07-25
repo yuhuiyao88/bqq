@@ -460,41 +460,37 @@ getEta <- function(fit_result, H = NULL, X = NULL, offset = NULL, n_samples = 10
 
 # Shared engine for ONE basis (quantile or qss). Aligns the UI and Hotelling-T^2
 # tests AT THE CELL LEVEL. `cv` is n_iter x (ncell*r), cell (c,j) at column
-# (j-1)*ncell + c. Studentize each cell (z = mean/sd over the gamma draws), then
-# GLOBALLY whiten: z_tilde = R^{-1/2} z, which is ~ N(0, I) under H0. The
-# cell-specific statistic is the whitened squared z-score z_tilde^2 (chi-square_1).
-# Summing those squares gives Hotelling's T^2 at every scope:
+# (j-1)*ncell + c. cbar = posterior mean of each cell over the gamma draws.
+# POSTERIOR WHITENING (Section 3.1): z_tilde = Sigma^{-1/2} cbar, the eigen-based (ZCA)
+# inverse square root of the posterior covariance Sigma, so the cells are ~ N(0, I)
+# (independent) under H0. The cell-specific statistic is z_tilde^2 (chi-square_1):
 #   block   T^2_j = sum_{cells in block j} z_tilde^2   ~ chi-square_ncell
-#   overall T^2   = sum over ALL cells       z_tilde^2 ~ chi-square_(ncell*r) = z' R^-1 z
+#   overall T^2   = max_j T^2_j  (Section 3.2), p^{T2} = 1 - (P(chi2_ncell <= T^2))^r
 # The UI test uses the SAME whitened cells but aggregates by MAX instead of SUM:
 #   block   UI_j  = max_{cells in block j} |z_tilde|,  overall UI = max over all cells.
 # After whitening the cells are independent, so the per-block p-values are exact
 # (chi-square for T^2; max-of-iid-normals for UI) and the block-level adjustment
 # family {raw, Bonferroni, Holm, BH, calibrated} is analytic (no Monte Carlo).
-.bqq_block_tests <- function(cv, ncell, r, alpha, want_ui, want_t2, whiten = TRUE, rowlab = NULL) {
+# `z` (studentized cbar/sd) is retained for interpretable display only.
+.bqq_block_tests <- function(cv, ncell, r, alpha, want_ui, want_t2, rowlab = NULL) {
   cbar <- colMeans(cv)
   S    <- stats::cov(cv)
   sdv  <- sqrt(pmax(diag(S), 1e-12))
-  R    <- S / tcrossprod(sdv)
-  z_vec <- cbar / sdv
-  # Cell z-scores. whiten = TRUE: global symmetric (ZCA) whitening z_tilde = R^{-1/2} z,
-  # so cells are ~ N(0, I) (independent) under H0 and T^2 = sum z_tilde^2 = z' R^-1 z is
-  # the EXACT Hotelling statistic with exact chi-square / max-of-iid p-values. whiten =
-  # FALSE: cells are just self-standardized (z_tilde = z), so T^2 = sum z^2 is the naive
-  # sum of squared standardized z (cross-correlation ignored; p-values approximate).
-  if (whiten) {
-    # Moore-Penrose inverse square root (ginv-style): drop the numerically-null
-    # eigen-directions instead of flooring them, so a rank-deficient / collinear R
-    # (e.g. the highly correlated quantile gammas) does not blow up the whitening.
-    eig <- eigen((R + t(R)) / 2, symmetric = TRUE)
-    lam <- eig$values
-    tol <- max(lam) * sqrt(.Machine$double.eps)
-    inv_sqrt <- ifelse(lam > tol, 1 / sqrt(lam), 0)
-    Rinvsqrt <- eig$vectors %*% (inv_sqrt * t(eig$vectors))   # V diag(inv_sqrt) V'
-    zt  <- as.numeric(Rinvsqrt %*% z_vec)
-  } else {
-    zt  <- z_vec
-  }
+  R    <- S / tcrossprod(sdv)               # correlation, kept only for the returned $R
+  z_vec <- cbar / sdv                        # studentized cells (interpretable display only)
+  # Posterior whitening (Section 3.1): z_tilde = Sigma^{-1/2} cbar, the eigen-based (ZCA)
+  # inverse square root of the posterior covariance Sigma, so cells are ~ N(0, I)
+  # (independent) under H0 and T^2 = sum z_tilde^2 = cbar' Sigma^-1 cbar is the EXACT
+  # Hotelling statistic with exact chi-square / max-of-iid p-values. Moore-Penrose form
+  # (ginv-style): drop the numerically-null eigen-directions instead of flooring them, so
+  # a rank-deficient / collinear Sigma (e.g. the highly correlated quantile gammas) does
+  # not blow up the whitening.
+  eig <- eigen((S + t(S)) / 2, symmetric = TRUE)
+  lam <- eig$values
+  tol <- max(lam) * sqrt(.Machine$double.eps)
+  inv_sqrt <- ifelse(lam > tol, 1 / sqrt(lam), 0)
+  Sinvsqrt <- eig$vectors %*% (inv_sqrt * t(eig$vectors))   # V diag(inv_sqrt) V'
+  zt  <- as.numeric(Sinvsqrt %*% cbar)
   z_mat    <- matrix(z_vec, ncell, r)
   zt_mat   <- matrix(zt,    ncell, r)
   cellstat <- zt_mat^2                      # cell-specific test: whitened squared z
@@ -512,8 +508,8 @@ getEta <- function(fit_result, H = NULL, X = NULL, offset = NULL, n_samples = 10
     p  <- stats::pchisq(W, df = ncell, lower.tail = FALSE)
     c_ss <- stats::qchisq((1 - alpha)^(1 / r), df = ncell)         # single-step max over r blocks
     out$hotelling_t2 <- .bqq_adj_family(W, p, alpha, c_ss)
-    out$overall_t2   <- sum(zt^2)
-    out$overall_t2_p <- stats::pchisq(out$overall_t2, df = ncell * r, lower.tail = FALSE)
+    out$overall_t2   <- max(W)                                     # overall T^2 = max_j T^2_j (Sec 3.2)
+    out$overall_t2_p <- 1 - stats::pchisq(out$overall_t2, df = ncell)^r  # p^{T2}=1-(P(chi2_m<=T^2))^r
   }
   if (want_ui) {
     M  <- vapply(blk, function(ix) max(abs(zt[ix])), 0)            # block UI = max |whitened z|
@@ -573,21 +569,15 @@ getEta <- function(fit_result, H = NULL, X = NULL, offset = NULL, n_samples = 10
 #'   also accepted. The QSS family is simply the quantile family rotated into an
 #'   interpretable, moment-aligned basis (L, S, Sk, K).
 #' @param statistic Character vector selecting how a block's cells are combined into a
-#'   block-level test. Both are built from the same globally-whitened cell z-scores
-#'   \eqn{\tilde z = R^{-1/2} z}: \code{"ui"} (default) is the union-intersection / max
-#'   test \eqn{\max_k |\tilde z_k|}, and \code{"hotelling_t2"} is the sum
-#'   \eqn{\sum_k \tilde z_k^2}. The cell-specific statistic \eqn{\tilde z_k^2} sums to
-#'   the block \eqn{T^2} (over the block's cells) and to the overall \eqn{T^2 = z'R^{-1}z}
-#'   (over all cells). \code{"cell_max"} is accepted as a deprecated alias for \code{"ui"}.
-#'   The legacy \code{calibrated}/\code{block_test}/\code{qss} flags are derived from
-#'   \code{basis} and \code{statistic} unless passed explicitly.
-#' @param whiten Logical (default TRUE). If TRUE, whiten the cells globally
-#'   (\eqn{\tilde z = R^{-1/2} z}) so they are independent under H0 — the UI and
-#'   Hotelling \eqn{T^2} then have exact (chi-square / max-of-iid) p-values and the
-#'   \eqn{T^2} is the exact \eqn{z' R^{-1} z}. If FALSE, the cells are only
-#'   self-standardized (\eqn{\tilde z = z}); the \eqn{T^2} becomes the naive sum of
-#'   squared standardized z (cross-correlation ignored) and the p-values are
-#'   approximate. Whitening decorrelates but mixes the interpretable cells.
+#'   block-level test. Both are built from the same posterior-whitened cell z-scores
+#'   \eqn{\tilde z = \Sigma_\gamma^{-1/2}\bar\gamma} (Section 3.1, always applied): \code{"ui"}
+#'   (default) is the union-intersection / max test \eqn{\max_k |\tilde z_k|}, and
+#'   \code{"hotelling_t2"} is the sum \eqn{\sum_k \tilde z_k^2}. The cell statistic
+#'   \eqn{\tilde z_k^2} sums to the block \eqn{T^2_j}; the overall \eqn{T^2 = \max_j T^2_j}
+#'   with \eqn{p^{T^2} = 1 - (P(\chi^2_{ncell} \le T^2))^r} (Section 3.2). \code{"cell_max"}
+#'   is a deprecated alias for \code{"ui"}. The legacy \code{calibrated}/\code{block_test}/
+#'   \code{qss} flags are derived from \code{basis} and \code{statistic} unless passed
+#'   explicitly.
 #' @param seed Random seed (only used when generating new Laplace samples).
 #' @param calibrated Logical or NULL (default NULL = derive). If TRUE, run the UI test
 #'   on the quantile basis; \code{significant_calib} is its calibrated (single-step max)
@@ -595,11 +585,10 @@ getEta <- function(fit_result, H = NULL, X = NULL, offset = NULL, n_samples = 10
 #' @param block_test Logical or NULL (default NULL = derive). If TRUE, run the Hotelling
 #'   \eqn{T^2} on the quantile basis (\code{significant_wald_*}, \code{W_block}).
 #' @param qss Logical or NULL (default NULL = derive). If TRUE, run the requested test(s)
-#'   on the QSS basis — the four shape contrasts L = \eqn{\gamma_{.5}}, S =
-#'   \eqn{\gamma_{.75}-\gamma_{.25}}, Sk = \eqn{\gamma_{.75}+\gamma_{.25}-2\gamma_{.5}},
-#'   K = \eqn{(\gamma_{.975}-\gamma_{.025}) - \kappa_0(\gamma_{.75}-\gamma_{.25})}
-#'   (\code{significant_qss_*}, \code{significant_qss_t2_*}). \eqn{\kappa_0} falls back to
-#'   the standard-normal tail/IQR ratio when the intercept posterior is unavailable.
+#'   on the QSS basis — the four shape-shift contrasts (Appendix C) L = \eqn{\gamma_{.5}},
+#'   S = \eqn{\gamma_{.75}-\gamma_{.25}}, Sk = \eqn{\gamma_{.25}-2\gamma_{.5}+\gamma_{.75}},
+#'   K = \eqn{\gamma_{.975}-\gamma_{.75}+\gamma_{.25}-\gamma_{.025}} (tail excess)
+#'   (\code{significant_qss_*}, \code{significant_qss_t2_*}).
 #'   Requires the five-quantile grid (0.025, 0.25, 0.5, 0.75, 0.975).
 #' @param n_calib Retained for backward compatibility; unused (the whitened tests are
 #'   analytic and need no Monte-Carlo calibration).
@@ -611,7 +600,7 @@ getEta <- function(fit_result, H = NULL, X = NULL, offset = NULL, n_samples = 10
 #'   and \code{$overall_t2(_p)}. \code{detected_blocks} carries the significance flags
 #'   for all four charts (\code{significant_*}, \code{significant_wald_*},
 #'   \code{significant_qss_*}, \code{significant_qss_t2_*}). Flat aliases and
-#'   \code{basis}/\code{statistic}/\code{k0_hat} are also returned.
+#'   \code{basis}/\code{statistic} are also returned.
 #' @export
 detectChangepoints_gamma <- function(fit_result, taus, l, w,
                                      signal_position = c("first", "last", "middle", "max_deviation", "pinball"),
@@ -619,7 +608,6 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
                                      laplace_n_samples = 1000, alpha = 0.05,
                                      basis = c("quantile", "qss"),
                                      statistic = c("ui", "hotelling_t2"),
-                                     whiten = TRUE,
                                      calibrated = NULL, block_test = NULL, qss = NULL,
                                      n_calib = 2000L,
                                      seed = NULL) {
@@ -700,16 +688,6 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
     stop("Unknown fit_method: ", fit_method)
   }
 
-  # Beta (intercept + covariate) samples — used only for the QSS kappa0 baseline
-  # tail/IQR ratio (opt-in via qss = TRUE). Absent => theoretical-normal fallback.
-  beta_samples <- NULL
-  if (isTRUE(qss)) {
-    beta_samples <- tryCatch({
-      if (fit_method %in% c("mcmc", "map_mcmc")) rstan::extract(fit_result$fit)$beta
-      else fit_result$laplace_samples$beta
-    }, error = function(e) NULL)
-  }
-
   # Coherent point estimate of the fitted quantiles (m x n) for within-block
   # localization: MAP mode under fit_method = "map"/"map_mcmc", posterior median
   # under "mcmc" (see .bqq_point_eta). This replaces averaging the eta draws
@@ -735,12 +713,12 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
   # same block-level adjustment family {raw, Bonferroni, Holm, BH, calibrated}.
   # See .bqq_block_tests().
   # ============================================================
-  q_res <- NULL; qss_res <- NULL; k0_hat <- NA_real_
+  q_res <- NULL; qss_res <- NULL
 
   if (do_quantile) {
     cvq <- matrix(NA_real_, n_iter, m * r)          # cell (q,j) -> (j-1)*m + q
     for (j in seq_len(r)) cvq[, ((j - 1L) * m + 1L):(j * m)] <- gamma_samples[, , j]
-    q_res <- .bqq_block_tests(cvq, m, r, alpha, do_q_ui, do_q_t2, whiten, format(taus))
+    q_res <- .bqq_block_tests(cvq, m, r, alpha, do_q_ui, do_q_t2, format(taus))
   }
 
   if (do_qss_fam) {
@@ -750,28 +728,21 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
     } else {
       qi <- vapply(c(0.025, 0.25, 0.5, 0.75, 0.975),
                    function(t) which.min(abs(taus - t)), integer(1))
-      # kappa0: estimated baseline tail/IQR ratio from the intercept quantiles;
-      # standard-normal ratio (~2.906) as fallback when beta is unavailable.
-      k0_hat <- (qnorm(0.975) - qnorm(0.025)) / (qnorm(0.75) - qnorm(0.25))
-      b0 <- tryCatch(
-        if (!is.null(beta_samples) && length(dim(beta_samples)) == 3)
-          beta_samples[, , 1] else beta_samples,
-        error = function(e) NULL)
-      if (!is.null(b0) && !is.null(dim(b0)) && ncol(b0) >= max(qi)) {
-        val <- mean((b0[, qi[5]] - b0[, qi[1]]) /
-                      pmax(b0[, qi[4]] - b0[, qi[2]], 0.02), na.rm = TRUE)
-        if (is.finite(val) && val > 0) k0_hat <- val
-      }
+      # QSS shift statistics = linear contrasts of the block gammas (Appendix C):
+      #   LS  = gamma_3                                  (location, median)
+      #   ScS = gamma_4 - gamma_2                         (scale, IQR)
+      #   SkS = gamma_2 - 2 gamma_3 + gamma_4             (skewness, Bowley numerator)
+      #   KS  = gamma_5 - gamma_4 + gamma_2 - gamma_1     (kurtosis, tail excess beyond the quartiles)
       cvc <- matrix(NA_real_, n_iter, 4L * r)         # cell (c,j) -> (j-1)*4 + c
       for (j in seq_len(r)) {
         g <- gamma_samples[, , j]
         cvc[, ((j - 1L) * 4L + 1L):(j * 4L)] <- cbind(
-          g[, qi[3]],                                           # L : median
-          g[, qi[4]] - g[, qi[2]],                              # S : IQR
-          g[, qi[4]] + g[, qi[2]] - 2 * g[, qi[3]],             # Sk: Bowley numerator
-          (g[, qi[5]] - g[, qi[1]]) - k0_hat * (g[, qi[4]] - g[, qi[2]]))  # K
+          g[, qi[3]],                                                  # L : median
+          g[, qi[4]] - g[, qi[2]],                                     # S : IQR
+          g[, qi[4]] + g[, qi[2]] - 2 * g[, qi[3]],                    # Sk: Bowley numerator
+          (g[, qi[5]] - g[, qi[4]]) + (g[, qi[2]] - g[, qi[1]]))       # K : tail excess (gamma_5-gamma_4+gamma_2-gamma_1)
       }
-      qss_res <- .bqq_block_tests(cvc, 4L, r, alpha, do_qss_ui, do_qss_t2, whiten,
+      qss_res <- .bqq_block_tests(cvc, 4L, r, alpha, do_qss_ui, do_qss_t2,
                                   c("L", "S", "Sk", "K"))
     }
   }
@@ -1021,10 +992,9 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
     significant_qss_t2 = significant_qss_t2, n_significant_qss_t2 = length(significant_qss_t2),
     overall_ui_qss = overall_ui_qss, overall_ui_qss_p = overall_ui_qss_p,
     overall_t2_qss = overall_t2_qss, overall_t2_qss_p = overall_t2_qss_p,
-    k0_hat = k0_hat,
     # ---- configuration ----
     signal_position = signal_position, alpha = alpha,
-    basis = basis, statistic = statistic, whiten = whiten,
+    basis = basis, statistic = statistic,
     calibrated = calibrated, block_test = block_test, qss = qss
   )
 }

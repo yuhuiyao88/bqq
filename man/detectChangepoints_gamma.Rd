@@ -16,7 +16,6 @@ detectChangepoints_gamma(
   alpha = 0.05,
   basis = c("quantile", "qss"),
   statistic = c("ui", "hotelling_t2"),
-  whiten = TRUE,
   calibrated = NULL,
   block_test = NULL,
   qss = NULL,
@@ -57,22 +56,15 @@ also accepted. The QSS family is simply the quantile family rotated into an
 interpretable, moment-aligned basis (L, S, Sk, K).}
 
 \item{statistic}{Character vector selecting how a block's cells are combined into a
-block-level test. Both are built from the same globally-whitened cell z-scores
-\eqn{\tilde z = R^{-1/2} z}: \code{"ui"} (default) is the union-intersection / max
-test \eqn{\max_k |\tilde z_k|}, and \code{"hotelling_t2"} is the sum
-\eqn{\sum_k \tilde z_k^2}. The cell-specific statistic \eqn{\tilde z_k^2} sums to
-the block \eqn{T^2} (over the block's cells) and to the overall \eqn{T^2 = z'R^{-1}z}
-(over all cells). \code{"cell_max"} is accepted as a deprecated alias for \code{"ui"}.
-The legacy \code{calibrated}/\code{block_test}/\code{qss} flags are derived from
-\code{basis} and \code{statistic} unless passed explicitly.}
-
-\item{whiten}{Logical (default TRUE). If TRUE, whiten the cells globally
-(\eqn{\tilde z = R^{-1/2} z}) so they are independent under H0 — the UI and
-Hotelling \eqn{T^2} then have exact (chi-square / max-of-iid) p-values and the
-\eqn{T^2} is the exact \eqn{z' R^{-1} z}. If FALSE, the cells are only
-self-standardized (\eqn{\tilde z = z}); the \eqn{T^2} becomes the naive sum of
-squared standardized z (cross-correlation ignored) and the p-values are
-approximate. Whitening decorrelates but mixes the interpretable cells.}
+block-level test. Both are built from the same posterior-whitened cell z-scores
+\eqn{\tilde z = \Sigma_\gamma^{-1/2}\bar\gamma} (Section 3.1, always applied): \code{"ui"}
+(default) is the union-intersection / max test \eqn{\max_k |\tilde z_k|}, and
+\code{"hotelling_t2"} is the sum \eqn{\sum_k \tilde z_k^2}. The cell statistic
+\eqn{\tilde z_k^2} sums to the block \eqn{T^2_j}; the overall \eqn{T^2 = \max_j T^2_j}
+with \eqn{p^{T^2} = 1 - (P(\chi^2_{ncell} \le T^2))^r} (Section 3.2). \code{"cell_max"}
+is a deprecated alias for \code{"ui"}. The legacy \code{calibrated}/\code{block_test}/
+\code{qss} flags are derived from \code{basis} and \code{statistic} unless passed
+explicitly.}
 
 \item{calibrated}{Logical or NULL (default NULL = derive). If TRUE, run the UI test
 on the quantile basis; \code{significant_calib} is its calibrated (single-step max)
@@ -82,11 +74,10 @@ member of the adjustment family.}
 \eqn{T^2} on the quantile basis (\code{significant_wald_*}, \code{W_block}).}
 
 \item{qss}{Logical or NULL (default NULL = derive). If TRUE, run the requested test(s)
-on the QSS basis — the four shape contrasts L = \eqn{\gamma_{.5}}, S =
-\eqn{\gamma_{.75}-\gamma_{.25}}, Sk = \eqn{\gamma_{.75}+\gamma_{.25}-2\gamma_{.5}},
-K = \eqn{(\gamma_{.975}-\gamma_{.025}) - \kappa_0(\gamma_{.75}-\gamma_{.25})}
-(\code{significant_qss_*}, \code{significant_qss_t2_*}). \eqn{\kappa_0} falls back to
-the standard-normal tail/IQR ratio when the intercept posterior is unavailable.
+on the QSS basis — the four shape-shift contrasts (Appendix C) L = \eqn{\gamma_{.5}},
+S = \eqn{\gamma_{.75}-\gamma_{.25}}, Sk = \eqn{\gamma_{.25}-2\gamma_{.5}+\gamma_{.75}},
+K = \eqn{\gamma_{.975}-\gamma_{.75}+\gamma_{.25}-\gamma_{.025}} (tail excess)
+(\code{significant_qss_*}, \code{significant_qss_t2_*}).
 Requires the five-quantile grid (0.025, 0.25, 0.5, 0.75, 0.975).}
 
 \item{n_calib}{Retained for backward compatibility; unused (the whitened tests are
@@ -103,7 +94,7 @@ A list. \code{tests[[basis]]} (\code{"quantile"} / \code{"qss"}) carries
   and \code{$overall_t2(_p)}. \code{detected_blocks} carries the significance flags
   for all four charts (\code{significant_*}, \code{significant_wald_*},
   \code{significant_qss_*}, \code{significant_qss_t2_*}). Flat aliases and
-  \code{basis}/\code{statistic}/\code{k0_hat} are also returned.
+  \code{basis}/\code{statistic} are also returned.
 }
 \description{
 Uses the H-matrix gamma coefficients directly for change-point detection.
