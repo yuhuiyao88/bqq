@@ -13,7 +13,7 @@ cv_copss_map(
   grid_lambda_nc,
   eps_rel = 0.1,
   prior_beta = "normal",
-  prior_gamma = "group_lasso",
+  prior_gamma = "spike_slab",
   map_iter = 2000,
   seed = 123,
   verbose = TRUE
@@ -34,7 +34,7 @@ cv_copss_map(
 
 \item{prior_beta}{Prior type for betaX (default "normal").}
 
-\item{prior_gamma}{Prior type for gamma (default "group_lasso").}
+\item{prior_gamma}{Prior type for gamma (default "spike_slab").}
 
 \item{map_iter}{Maximum iterations for MAP optimization.}
 

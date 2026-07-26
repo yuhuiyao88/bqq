@@ -41,7 +41,7 @@ pinball_loss <- function(y_val, qhat, taus) {
 #' @param grid_lambda_nc Numeric vector of candidate \code{lambda_nc} (non-crossing penalty).
 #' @param eps_rel Smoothing temperature (default 0.1).
 #' @param prior_beta Prior type for betaX (default "normal").
-#' @param prior_gamma Prior type for gamma (default "group_lasso").
+#' @param prior_gamma Prior type for gamma (default "spike_slab").
 #' @param map_iter Maximum iterations for MAP optimization.
 #' @param seed Random seed.
 #' @param verbose Print progress messages.
@@ -69,7 +69,7 @@ cv_copss_map <- function(y, taus, H, X = NULL, w,
                             grid_lambda_nc,
                             eps_rel = 0.1,
                             prior_beta = "normal",
-                            prior_gamma = "group_lasso",
+                            prior_gamma = "spike_slab",
                             map_iter = 2000,
                             seed = 123,
                             verbose = TRUE) {

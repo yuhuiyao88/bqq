@@ -117,8 +117,8 @@
 #'   \code{"spike_slab"}, \code{"group_lasso"}, \code{"het_group_lasso"}, or
 #'   \code{"adaptive_lasso"}. The intercept \code{beta0} always retains its own
 #'   normal prior \code{beta0[q] ~ Normal(quantile(y[1:w], tau_q), beta0_scale[q])}.
-#' @param prior_gamma Prior type for gamma: \code{"group_lasso"}, \code{"lasso"},
-#'   \code{"spike_slab"}, \code{"het_group_lasso"}, \code{"adaptive_lasso"}, or
+#' @param prior_gamma Prior type for gamma: \code{"spike_slab"} (default),
+#'   \code{"group_lasso"}, \code{"lasso"}, \code{"het_group_lasso"}, \code{"adaptive_lasso"}, or
 #'   \code{"spike_slab_lasso"} (a continuous Laplace spike + Laplace slab mixture,
 #'   Rockova & George 2018; reuses \code{spike_sd}/\code{slab_sd} as Laplace scales).
 #'   The \code{"adaptive_lasso"} option follows a Leng et al. (2014)-style hierarchy
@@ -188,7 +188,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
                         laplace_noise_scale = 0.1,
                         prior_beta = c("normal", "lasso", "spike_slab",
                                        "group_lasso", "het_group_lasso", "adaptive_lasso"),
-                        prior_gamma = c("group_lasso", "lasso", "spike_slab",
+                        prior_gamma = c("spike_slab", "group_lasso", "lasso",
                                         "het_group_lasso", "adaptive_lasso",
                                         "spike_slab_lasso"),
                         beta_spike_sd = 0.05, beta_slab_sd = 2.0,
