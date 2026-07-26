@@ -39,7 +39,6 @@ pinball_loss <- function(y_val, qhat, taus) {
 #' @param H,X Design matrices (already aligned with y).
 #' @param w Integer; passed to \code{getModel}.
 #' @param grid_lambda_nc Numeric vector of candidate \code{lambda_nc} (non-crossing penalty).
-#' @param eps_rel Smoothing temperature (default 0.1).
 #' @param prior_beta Prior type for betaX (default "normal").
 #' @param prior_gamma Prior type for gamma (default "spike_slab").
 #' @param map_iter Maximum iterations for MAP optimization.
@@ -67,7 +66,6 @@ pinball_loss <- function(y_val, qhat, taus) {
 #' @export
 cv_copss_map <- function(y, taus, H, X = NULL, w,
                             grid_lambda_nc,
-                            eps_rel = 0.1,
                             prior_beta = "normal",
                             prior_gamma = "spike_slab",
                             map_iter = 2000,
@@ -84,7 +82,7 @@ cv_copss_map <- function(y, taus, H, X = NULL, w,
     fit <- tryCatch({
       getModel(
         y = y_tr, taus = taus, H = H_tr, X = X_tr, w = w,
-        lambda_nc = lnc, eps_rel = eps_rel,
+        lambda_nc = lnc,
         prior_beta = prior_beta,
         prior_gamma = prior_gamma,
         fit_method = "map",
@@ -215,7 +213,7 @@ cv_copss_map <- function(y, taus, H, X = NULL, w,
 #' @param taus Numeric vector of quantile levels.
 #' @param H,X Design matrices.
 #' @param w Integer warm-up period.
-#' @param grid data.frame with columns for hyperparameters (lambda_nc, eps_rel, etc.)
+#' @param grid data.frame with columns for hyperparameters (lambda_nc, etc.)
 #' @param base_args Named list of additional arguments passed to getModel.
 #' @param seed Random seed.
 #' @param verbose Print progress.
@@ -387,7 +385,7 @@ cv_copss_grid <- function(y, taus, H, X = NULL, w, grid,
 #' @param taus Numeric vector of quantile levels.
 #' @param H,X Design matrices.
 #' @param w Integer warm-up period.
-#' @param grid data.frame with columns for hyperparameters (lambda_nc, eps_rel, etc.)
+#' @param grid data.frame with columns for hyperparameters (lambda_nc, etc.)
 #' @param base_args Named list of additional arguments passed to getModel.
 #' @param mcmc_warmup Number of MCMC warmup iterations (default 200).
 #' @param mcmc_draws Number of MCMC sampling iterations (default 300).

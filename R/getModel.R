@@ -55,12 +55,17 @@
 #' @param eps_w Positive scalar added to pilot estimates for numerical stability
 #'   in the IQ shrinkage weights (default 1e-6).
 #' @param c_sigma Positive scalar scaling factor for the base scale (default 1.0).
-#' @param base_scale Optional positive scalar robust scale; defaults to
-#'   \code{1.4826 * mad(y)}. Sets the smoothing temperature
-#'   (\code{smooth_T = base_scale * eps_rel}) and the default \code{beta0_scale}.
+#' @param base_scale Optional positive scalar smoothing bandwidth. Defaults to the
+#'   Fernandes, Guerre & Horta (2021) rule-of-thumb
+#'   \code{1.06 * s * length(y)^(-1/5)} with \code{s = min(sd, IQR/1.38898)} of the
+#'   standard median (tau = 0.5) regression residuals, fitted on the ordinary
+#'   predictors [intercept | X] only (the change-point design H is excluded). Used
+#'   as the smoothing temperature \code{smooth_T = base_scale}; it does NOT set
+#'   \code{beta0_scale}.
 #' @param beta0_scale Prior std dev for the per-quantile intercept \code{beta0};
-#'   a positive scalar (recycled) or length-\code{m} vector, defaulting to
-#'   \code{base_scale} per quantile. The prior is
+#'   a positive scalar (recycled) or length-\code{m} vector. Defaults to a fixed
+#'   weakly-informative \code{10} per quantile (Gelman et al. 2013); set it to your
+#'   data's scale. The prior is
 #'   \code{beta0[q] ~ Normal(quantile(y[1:w], tau_q), beta0_scale[q])}.
 #' @param beta_sd Positive scalar prior std dev for \code{betaX} coefficients under
 #'   \code{prior_beta = "normal"} (default 1.0).
@@ -72,7 +77,6 @@
 #'   data-adaptive IQ prior was removed because its joint-MAP mode is degenerate
 #'   (collapses to 0) under \code{fit_method = "map"}, unlike the normalized
 #'   scale-mixture priors on the beta/gamma coefficients.
-#' @param eps_rel Positive scalar "smoothing temperature" (dimensionless).
 #' @param adaptive_beta Logical; if TRUE (default), the beta-side shrinkage level
 #'   \eqn{\lambda_\beta^2} is learned from data for LASSO-type priors. If FALSE,
 #'   \code{lambda_beta2_fixed} is used.
@@ -167,7 +171,7 @@
 getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
                         alpha = 0.75, eps_w = 1e-6, c_sigma = 1.0,
                         base_scale = NULL, beta0_scale = NULL, beta_sd = 1.0,
-                        lambda_nc = 2, eps_rel = 0.1,
+                        lambda_nc = 2,
                         lambda_iq = 1,
                         adaptive_beta = TRUE,
                         lambda_beta2_a = 1, lambda_beta2_b = 0.05,
@@ -280,8 +284,6 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
 
       // Interquantile (fused lasso) shrinkage: fixed effective penalty weight
       real<lower=0> lambda_iq;         // L1 fusion weight on adjacent-quantile differences
-
-      real eps_rel;                      // smoothing temperature (dimensionless)
 
       real<lower=0> lambda_lasso2_a;
       real<lower=0> lambda_lasso2_b;
@@ -425,8 +427,8 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
         }
       }
 
-      // Smoothing temperature on data scale
-      real<lower=1e-12> smooth_T = base_scale * eps_rel;
+      // Smoothing bandwidth (FGH rule-of-thumb; computed on the R side as base_scale)
+      real<lower=1e-12> smooth_T = base_scale;
 
       vector[n] y_eff;
       y_eff = y;
@@ -754,9 +756,28 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
     }
   }
 
-  # Base scale for smoothing (robust); overridable via the base_scale argument
+  # Smoothing bandwidth (Fernandes, Guerre & Horta 2021 rule-of-thumb; Silverman 1986):
+  #   base_scale = 1.06 * s * n^(-1/5),  s = min(sd, IQR / 1.38898) of the standard
+  # median (tau = 0.5) regression residuals. The pilot median fit uses only the
+  # ordinary predictors [intercept | X]; the change-point design H is excluded so the
+  # shift structure being detected cannot absorb the residual scale. Overridable via
+  # the base_scale argument.
   if (is.null(base_scale)) {
-    base_scale <- max(1e-8, 1.4826 * stats::mad(y))
+    if (!is.null(X) && ncol(as.matrix(X)) > 0 &&
+        requireNamespace("quantreg", quietly = TRUE)) {
+      Xd_med <- cbind(1, as.matrix(X))
+      fit_med <- try(suppressWarnings(
+        quantreg::rq(y ~ Xd_med - 1, tau = 0.5, method = "fn")), silent = TRUE)
+      med_resid <- if (inherits(fit_med, "try-error")) {
+        y - as.numeric(stats::quantile(y, 0.5))
+      } else {
+        y - as.numeric(Xd_med %*% as.numeric(stats::coef(fit_med)))
+      }
+    } else {
+      med_resid <- y - as.numeric(stats::quantile(y, 0.5))
+    }
+    s_disp <- min(stats::sd(med_resid), stats::IQR(med_resid) / 1.38898)
+    base_scale <- max(1e-8, 1.06 * s_disp * length(y)^(-1 / 5))
   }
 
   # beta0 prior location: per-quantile level of the warm-up window
@@ -767,9 +788,10 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
   }
   beta0_loc <- as.vector(beta0_loc)
 
-  # beta0 prior scale: defaults to base_scale per quantile; accepts scalar or length-m vector
+  # beta0 prior scale: fixed weakly-informative default (Gelman et al. 2013), decoupled
+  # from the smoothing bandwidth; accepts scalar or length-m vector. Set to your data scale.
   if (is.null(beta0_scale)) {
-    beta0_scale <- rep(base_scale, m)
+    beta0_scale <- rep(10, m)
   } else if (length(beta0_scale) == 1L) {
     beta0_scale <- rep(beta0_scale, m)
   }
@@ -825,7 +847,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
     y = y, offset = offset, tau_q = taus,
     beta0_loc = beta0_loc, beta0_scale = beta0_scale,
     base_scale = base_scale, c_sigma = c_sigma, beta_sd = beta_sd,
-    lambda_nc = lambda_nc, eps_rel = eps_rel,
+    lambda_nc = lambda_nc,
     lambda_iq = lambda_iq,                        # fixed effective IQ fusion weight
     lambda_beta2_a = lambda_beta2_a, lambda_beta2_b = lambda_beta2_b,
     adaptive_beta = as.integer(adaptive_beta),

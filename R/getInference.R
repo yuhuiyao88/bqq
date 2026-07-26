@@ -505,36 +505,44 @@ getEta <- function(fit_result, H = NULL, X = NULL, offset = NULL, n_samples = 10
 
   if (want_t2) {
     W  <- vapply(blk, function(ix) sum(zt[ix]^2), 0)               # block T^2 = sum whitened z^2
-    p  <- stats::pchisq(W, df = ncell, lower.tail = FALSE)
-    c_ss <- stats::qchisq((1 - alpha)^(1 / r), df = ncell)         # single-step max over r blocks
-    out$hotelling_t2 <- .bqq_adj_family(W, p, alpha, c_ss)
+    p  <- stats::pchisq(W, df = ncell, lower.tail = FALSE)         # block posterior prob p_j^{T2} (Eq. 23)
+    c_block <- stats::qchisq(1 - alpha, df = ncell)                # block charting constant c_j^{T2} (Eq. 23)
+    c_ss <- stats::qchisq((1 - alpha)^(1 / r), df = ncell)         # full (process) charting constant c^{T2}:
+                                                                   #   Sidak (1967) single-step over r blocks (Eq. 24)
+    out$hotelling_t2 <- .bqq_adj_family(W, p, alpha, c_ss, c_block)
     out$overall_t2   <- max(W)                                     # overall T^2 = max_j T^2_j (Sec 3.2)
-    out$overall_t2_p <- 1 - stats::pchisq(out$overall_t2, df = ncell)^r  # p^{T2}=1-(P(chi2_m<=T^2))^r
+    out$overall_t2_p <- 1 - stats::pchisq(out$overall_t2, df = ncell)^r  # p^{T2}=1-(P(chi2_m<=T^2))^r (Eq. 24)
   }
   if (want_ui) {
     M  <- vapply(blk, function(ix) max(abs(zt[ix])), 0)            # block UI = max |whitened z|
-    p  <- 1 - (2 * stats::pnorm(M) - 1)^ncell
-    c_ss <- stats::qnorm((1 + (1 - alpha)^(1 / (ncell * r))) / 2)  # single-step max over all cells
-    out$ui <- .bqq_adj_family(M, p, alpha, c_ss)
+    p  <- 1 - (2 * stats::pnorm(M) - 1)^ncell                      # block posterior prob p_j^{UI} (Eq. 21)
+    c_block <- stats::qnorm((1 + (1 - alpha)^(1 / ncell)) / 2)     # block charting constant c_j^{UI} (Eq. 21)
+    c_ss <- stats::qnorm((1 + (1 - alpha)^(1 / (ncell * r))) / 2)  # full (process) charting constant c^{UI}:
+                                                                   #   order-statistic single-step over all cells (Eq. 22)
+    out$ui <- .bqq_adj_family(M, p, alpha, c_ss, c_block)
     out$overall_ui   <- max(abs(zt))
-    out$overall_ui_p <- 1 - (2 * stats::pnorm(out$overall_ui) - 1)^(ncell * r)
+    out$overall_ui_p <- 1 - (2 * stats::pnorm(out$overall_ui) - 1)^(ncell * r)  # p^{UI} (Eq. 22)
   }
   out
 }
 
-# Given a per-block statistic + per-block p-value, build the adjustment family over
-# the r blocks: raw / Bonferroni / Holm / BH on the p-values, plus `calibrated`, the
-# single-step max threshold on the statistic (block flagged if it exceeds c_ss).
-.bqq_adj_family <- function(stat, p, alpha, c_ss) {
+# Given a per-block statistic + per-block p-value, build the across-block adjustment
+# family over the r blocks. `raw` uses the block posterior prob p_j vs the block charting
+# constant c_block (Eqs. 21/23), with NO across-block adjustment; `Bonferroni`/`Holm`/`BH`
+# adjust the block p-values; `calibrated` uses the full (process) single-step charting
+# constant c_ss (Eqs. 22/24; the T^2 form is the Sidak (1967) correction) -- a block is
+# flagged if its statistic exceeds c_ss.
+.bqq_adj_family <- function(stat, p, alpha, c_ss, c_block = NA_real_) {
   ah <- stats::p.adjust(p, "holm")
   ab <- stats::p.adjust(p, "bonferroni")
   az <- stats::p.adjust(p, "BH")
-  list(stat = stat, pvalue = p, adjp_holm = ah, adjp_bonf = ab, adjp_bh = az, c_calib = c_ss,
-       sig_raw   = which(p  < alpha),
-       sig_holm  = which(ah < alpha),
-       sig_bonf  = which(ab < alpha),
-       sig_bh    = which(az < alpha),
-       sig_calib = which(stat > c_ss))
+  list(stat = stat, pvalue = p, adjp_holm = ah, adjp_bonf = ab, adjp_bh = az,
+       c_block = c_block, c_calib = c_ss,
+       raw   = which(p  < alpha),
+       holm  = which(ah < alpha),
+       bonf  = which(ab < alpha),
+       bh    = which(az < alpha),
+       calib = which(stat > c_ss))
 }
 
 #' Detect change points using gamma coefficients
@@ -574,7 +582,8 @@ getEta <- function(fit_result, H = NULL, X = NULL, offset = NULL, n_samples = 10
 #'   (default) is the union-intersection / max test \eqn{\max_k |\tilde z_k|}, and
 #'   \code{"hotelling_t2"} is the sum \eqn{\sum_k \tilde z_k^2}. The cell statistic
 #'   \eqn{\tilde z_k^2} sums to the block \eqn{T^2_j}; the overall \eqn{T^2 = \max_j T^2_j}
-#'   with \eqn{p^{T^2} = 1 - (P(\chi^2_{ncell} \le T^2))^r} (Section 3.2). \code{"cell_max"}
+#'   with \eqn{p^{T^2} = 1 - (P(\chi^2_{ncell} \le T^2))^r} (Section 3.2; the across-block
+#'   single-step is the Sidak (1967) correction). \code{"cell_max"}
 #'   is a deprecated alias for \code{"ui"}. The legacy \code{calibrated}/\code{block_test}/
 #'   \code{qss} flags are derived from \code{basis} and \code{statistic} unless passed
 #'   explicitly.
@@ -595,8 +604,8 @@ getEta <- function(fit_result, H = NULL, X = NULL, offset = NULL, n_samples = 10
 #' @return A list. \code{tests[[basis]]} (\code{"quantile"} / \code{"qss"}) carries
 #'   \code{$z} (studentized cells), \code{$z_white} (whitened), \code{$cellstat}
 #'   (whitened \eqn{\tilde z^2}), and \code{$ui} / \code{$hotelling_t2} — each with
-#'   \code{stat}, \code{pvalue}, \code{adjp_holm/bonf/bh}, \code{c_calib}, and
-#'   \code{sig_raw/holm/bonf/bh/calib} over the r blocks — plus \code{$overall_ui(_p)}
+#'   \code{stat}, \code{pvalue}, \code{adjp_holm/bonf/bh}, \code{c_block}, \code{c_calib}, and
+#'   \code{raw/holm/bonf/bh/calib} over the r blocks — plus \code{$overall_ui(_p)}
 #'   and \code{$overall_t2(_p)}. \code{detected_blocks} carries the significance flags
 #'   for all four charts (\code{significant_*}, \code{significant_wald_*},
 #'   \code{significant_qss_*}, \code{significant_qss_t2_*}). Flat aliases and
@@ -767,21 +776,21 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
   adjp_bonf         <- gu(q_res, "ui", "adjp_bonf", NULL)
   adjp_bh           <- gu(q_res, "ui", "adjp_bh", NULL)
   c_calib           <- gu(q_res, "ui", "c_calib", NA_real_)
-  sig_blocks_raw    <- gu(q_res, "ui", "sig_raw", ei)
-  significant_holm  <- gu(q_res, "ui", "sig_holm", ei)
-  significant_bonf  <- gu(q_res, "ui", "sig_bonf", ei)
-  significant_bh    <- gu(q_res, "ui", "sig_bh", ei)
-  significant_calib <- gu(q_res, "ui", "sig_calib", ei)
+  sig_blocks_raw    <- gu(q_res, "ui", "raw", ei)
+  significant_holm  <- gu(q_res, "ui", "holm",ei)
+  significant_bonf  <- gu(q_res, "ui", "bonf",ei)
+  significant_bh    <- gu(q_res, "ui", "bh",ei)
+  significant_calib <- gu(q_res, "ui", "calib",ei)
   # quantile — Hotelling T^2
   W_block                <- gu(q_res, "hotelling_t2", "stat", NAr)
   pvalue_wald            <- gu(q_res, "hotelling_t2", "pvalue", NAr)
   adjp_wald_holm         <- gu(q_res, "hotelling_t2", "adjp_holm", NULL)
   c_wald_calib           <- gu(q_res, "hotelling_t2", "c_calib", NA_real_)
-  significant_wald_raw   <- gu(q_res, "hotelling_t2", "sig_raw", ei)
-  significant_wald_holm  <- gu(q_res, "hotelling_t2", "sig_holm", ei)
-  significant_wald_bonf  <- gu(q_res, "hotelling_t2", "sig_bonf", ei)
-  significant_wald_bh    <- gu(q_res, "hotelling_t2", "sig_bh", ei)
-  significant_wald_calib <- gu(q_res, "hotelling_t2", "sig_calib", ei)
+  significant_wald_raw   <- gu(q_res, "hotelling_t2", "raw", ei)
+  significant_wald_holm  <- gu(q_res, "hotelling_t2", "holm",ei)
+  significant_wald_bonf  <- gu(q_res, "hotelling_t2", "bonf",ei)
+  significant_wald_bh    <- gu(q_res, "hotelling_t2", "bh",ei)
+  significant_wald_calib <- gu(q_res, "hotelling_t2", "calib",ei)
   overall_t2   <- gz(q_res, "overall_t2", NA_real_);   overall_t2_p <- gz(q_res, "overall_t2_p", NA_real_)
   overall_ui   <- gz(q_res, "overall_ui", NA_real_);   overall_ui_p <- gz(q_res, "overall_ui_p", NA_real_)
   # qss — cells
@@ -794,21 +803,21 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
   adjp_qss_bonf         <- gu(qss_res, "ui", "adjp_bonf", NULL)
   adjp_qss_bh           <- gu(qss_res, "ui", "adjp_bh", NULL)
   c_qss                 <- gu(qss_res, "ui", "c_calib", NA_real_)
-  significant_qss_raw   <- gu(qss_res, "ui", "sig_raw", ei)
-  significant_qss_holm  <- gu(qss_res, "ui", "sig_holm", ei)
-  significant_qss_bonf  <- gu(qss_res, "ui", "sig_bonf", ei)
-  significant_qss_bh    <- gu(qss_res, "ui", "sig_bh", ei)
-  significant_qss_calib <- gu(qss_res, "ui", "sig_calib", ei)
+  significant_qss_raw   <- gu(qss_res, "ui", "raw", ei)
+  significant_qss_holm  <- gu(qss_res, "ui", "holm",ei)
+  significant_qss_bonf  <- gu(qss_res, "ui", "bonf",ei)
+  significant_qss_bh    <- gu(qss_res, "ui", "bh",ei)
+  significant_qss_calib <- gu(qss_res, "ui", "calib",ei)
   # qss — Hotelling T^2
   W_qss                    <- gu(qss_res, "hotelling_t2", "stat", NAr)
   pvalue_qss_t2            <- gu(qss_res, "hotelling_t2", "pvalue", NAr)
   adjp_qss_t2_holm         <- gu(qss_res, "hotelling_t2", "adjp_holm", NULL)
   c_qss_t2                 <- gu(qss_res, "hotelling_t2", "c_calib", NA_real_)
-  significant_qss_t2_raw   <- gu(qss_res, "hotelling_t2", "sig_raw", ei)
-  significant_qss_t2_holm  <- gu(qss_res, "hotelling_t2", "sig_holm", ei)
-  significant_qss_t2_bonf  <- gu(qss_res, "hotelling_t2", "sig_bonf", ei)
-  significant_qss_t2_bh    <- gu(qss_res, "hotelling_t2", "sig_bh", ei)
-  significant_qss_t2_calib <- gu(qss_res, "hotelling_t2", "sig_calib", ei)
+  significant_qss_t2_raw   <- gu(qss_res, "hotelling_t2", "raw", ei)
+  significant_qss_t2_holm  <- gu(qss_res, "hotelling_t2", "holm",ei)
+  significant_qss_t2_bonf  <- gu(qss_res, "hotelling_t2", "bonf",ei)
+  significant_qss_t2_bh    <- gu(qss_res, "hotelling_t2", "bh",ei)
+  significant_qss_t2_calib <- gu(qss_res, "hotelling_t2", "calib",ei)
   significant_qss_t2       <- significant_qss_t2_calib   # back-compat alias (calibrated member)
   overall_t2_qss   <- gz(qss_res, "overall_t2", NA_real_); overall_t2_qss_p <- gz(qss_res, "overall_t2_p", NA_real_)
   overall_ui_qss   <- gz(qss_res, "overall_ui", NA_real_); overall_ui_qss_p <- gz(qss_res, "overall_ui_p", NA_real_)
