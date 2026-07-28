@@ -27,7 +27,7 @@ cv_copss_mcmc(
 
 \item{w}{Integer warm-up period.}
 
-\item{grid}{data.frame with columns for hyperparameters (lambda_nc, eps_rel, etc.)}
+\item{grid}{data.frame with columns for hyperparameters (lambda_nc, etc.)}
 
 \item{base_args}{Named list of additional arguments passed to getModel.}
 

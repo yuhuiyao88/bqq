@@ -61,7 +61,8 @@ block-level test. Both are built from the same posterior-whitened cell z-scores
 (default) is the union-intersection / max test \eqn{\max_k |\tilde z_k|}, and
 \code{"hotelling_t2"} is the sum \eqn{\sum_k \tilde z_k^2}. The cell statistic
 \eqn{\tilde z_k^2} sums to the block \eqn{T^2_j}; the overall \eqn{T^2 = \max_j T^2_j}
-with \eqn{p^{T^2} = 1 - (P(\chi^2_{ncell} \le T^2))^r} (Section 3.2). \code{"cell_max"}
+with \eqn{p^{T^2} = 1 - (P(\chi^2_{ncell} \le T^2))^r} (Section 3.2; the across-block
+single-step is the Sidak (1967) correction). \code{"cell_max"}
 is a deprecated alias for \code{"ui"}. The legacy \code{calibrated}/\code{block_test}/
 \code{qss} flags are derived from \code{basis} and \code{statistic} unless passed
 explicitly.}
@@ -89,8 +90,8 @@ analytic and need no Monte-Carlo calibration).}
 A list. \code{tests[[basis]]} (\code{"quantile"} / \code{"qss"}) carries
   \code{$z} (studentized cells), \code{$z_white} (whitened), \code{$cellstat}
   (whitened \eqn{\tilde z^2}), and \code{$ui} / \code{$hotelling_t2} — each with
-  \code{stat}, \code{pvalue}, \code{adjp_holm/bonf/bh}, \code{c_calib}, and
-  \code{sig_raw/holm/bonf/bh/calib} over the r blocks — plus \code{$overall_ui(_p)}
+  \code{stat}, \code{pvalue}, \code{adjp_holm/bonf/bh}, \code{c_block}, \code{c_calib}, and
+  \code{raw/holm/bonf/bh/calib} over the r blocks — plus \code{$overall_ui(_p)}
   and \code{$overall_t2(_p)}. \code{detected_blocks} carries the significance flags
   for all four charts (\code{significant_*}, \code{significant_wald_*},
   \code{significant_qss_*}, \code{significant_qss_t2_*}). Flat aliases and

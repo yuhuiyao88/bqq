@@ -18,7 +18,6 @@ getModel(
   beta0_scale = NULL,
   beta_sd = 1,
   lambda_nc = 2,
-  eps_rel = 0.1,
   lambda_iq = 1,
   adaptive_beta = TRUE,
   lambda_beta2_a = 1,
@@ -83,21 +82,29 @@ in the IQ shrinkage weights (default 1e-6).}
 
 \item{c_sigma}{Positive scalar scaling factor for the base scale (default 1.0).}
 
-\item{base_scale}{Optional positive scalar robust scale; defaults to
-\code{1.4826 * mad(y)}. Sets the smoothing temperature
-(\code{smooth_T = base_scale * eps_rel}) and the default \code{beta0_scale}.}
+\item{base_scale}{Optional positive scalar smoothing bandwidth. Defaults to the
+Fernandes, Guerre & Horta (2021) rule-of-thumb
+\code{1.06 * s * length(y)^(-1/5)} with \code{s = min(sd, IQR/1.38898)} of the
+standard median (tau = 0.5) regression residuals, fitted on the ordinary
+predictors [intercept | X] only (the change-point design H is excluded). Used
+as the smoothing temperature \code{smooth_T = base_scale}; it does NOT set
+\code{beta0_scale}.}
 
 \item{beta0_scale}{Prior std dev for the per-quantile intercept \code{beta0};
-a positive scalar (recycled) or length-\code{m} vector, defaulting to
-\code{base_scale} per quantile. The prior is
-\code{beta0[q] ~ Normal(quantile(y[1:w], tau_q), beta0_scale[q])}.}
+a positive scalar (recycled) or length-\code{m} vector, on the modeling scale
+of \code{y} (log scale when \code{log_flag = 1}). The default \code{10} is
+effectively flat on most data scales, leaving the warm-up centering inert;
+for an informative quantile-specific prior use, e.g.,
+\code{c * sqrt(taus * (1 - taus) / w) / f_hat}, where \code{f_hat} is a kernel
+density estimate of the warm-up window evaluated at its \code{taus} quantiles
+(the standard error of the warm-up quantile, times an inflation \code{c}). The
+prior is \code{beta0[q] ~ Normal(quantile(y_model[1:w], tau_q), beta0_scale[q])}
+with \code{y_model} the modeling-scale response.}
 
 \item{beta_sd}{Positive scalar prior std dev for \code{betaX} coefficients under
 \code{prior_beta = "normal"} (default 1.0).}
 
 \item{lambda_nc}{Positive scalar weight for the non-crossing penalty (larger is stricter).}
-
-\item{eps_rel}{Positive scalar "smoothing temperature" (dimensionless).}
 
 \item{lambda_iq}{Non-negative scalar, the interquantile (IQ) shrinkage weight: an
 L1 fusion penalty \eqn{\lambda_{iq}\sum_q |\gamma_q - \gamma_{q-1}|} pulling adjacent
@@ -130,7 +137,12 @@ coefficient-specific shrinkage in \code{"adaptive_lasso"}.}
 \item{lambda_lasso2_fixed}{Positive scalar; fixed value for the global shrinkage
 level \eqn{\lambda^2} when \code{adaptive_gamma = FALSE} (default 1).}
 
-\item{log_flag}{Integer \code{0/1}. If 1, fit on \code{log(y)}.}
+\item{log_flag}{Integer \code{0/1}. If 1, fit on \code{log(y)} (or
+\code{log(y + u)} with jittering). All data-driven inputs -- the \code{beta0}
+prior location, the \code{base_scale} bandwidth, and the pilot fits behind the
+adaptive IQ weights -- are then computed on the log scale as well (jitter
+approximated by its mean 0.5), so user-supplied \code{beta0_scale} /
+\code{base_scale} must also be given on the log scale.}
 
 \item{jittering}{Integer \code{0/1}. If 1, add \eqn{u \sim \mathrm{Beta}(1,1)} to \eqn{y}.}
 

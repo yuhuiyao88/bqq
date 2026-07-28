@@ -63,10 +63,15 @@
 #'   as the smoothing temperature \code{smooth_T = base_scale}; it does NOT set
 #'   \code{beta0_scale}.
 #' @param beta0_scale Prior std dev for the per-quantile intercept \code{beta0};
-#'   a positive scalar (recycled) or length-\code{m} vector. Defaults to a fixed
-#'   weakly-informative \code{10} per quantile (Gelman et al. 2013); set it to your
-#'   data's scale. The prior is
-#'   \code{beta0[q] ~ Normal(quantile(y[1:w], tau_q), beta0_scale[q])}.
+#'   a positive scalar (recycled) or length-\code{m} vector, on the modeling scale
+#'   of \code{y} (log scale when \code{log_flag = 1}). The default \code{10} is
+#'   effectively flat on most data scales, leaving the warm-up centering inert;
+#'   for an informative quantile-specific prior use, e.g.,
+#'   \code{c * sqrt(taus * (1 - taus) / w) / f_hat}, where \code{f_hat} is a kernel
+#'   density estimate of the warm-up window evaluated at its \code{taus} quantiles
+#'   (the standard error of the warm-up quantile, times an inflation \code{c}). The
+#'   prior is \code{beta0[q] ~ Normal(quantile(y_model[1:w], tau_q), beta0_scale[q])}
+#'   with \code{y_model} the modeling-scale response.
 #' @param beta_sd Positive scalar prior std dev for \code{betaX} coefficients under
 #'   \code{prior_beta = "normal"} (default 1.0).
 #' @param lambda_nc Positive scalar weight for the non-crossing penalty (larger is stricter).
@@ -94,7 +99,12 @@
 #'   value \code{lambda_lasso2_fixed} is used.
 #' @param lambda_lasso2_fixed Positive scalar; fixed value for the global shrinkage
 #'   level \eqn{\lambda^2} when \code{adaptive_gamma = FALSE} (default 1).
-#' @param log_flag Integer \code{0/1}. If 1, fit on \code{log(y)}.
+#' @param log_flag Integer \code{0/1}. If 1, fit on \code{log(y)} (or
+#'   \code{log(y + u)} with jittering). All data-driven inputs -- the \code{beta0}
+#'   prior location, the \code{base_scale} bandwidth, and the pilot fits behind the
+#'   adaptive IQ weights -- are then computed on the log scale as well (jitter
+#'   approximated by its mean 0.5), so user-supplied \code{beta0_scale} /
+#'   \code{base_scale} must also be given on the log scale.
 #' @param jittering Integer \code{0/1}. If 1, add \eqn{u \sim \mathrm{Beta}(1,1)} to \eqn{y}.
 #' @param chains Number of MCMC chains.
 #' @param iter Total iterations per chain.
@@ -756,6 +766,22 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
     }
   }
 
+  # Modeling-scale response: the Stan likelihood operates on y_eff = log(y (+ u))
+  # when log_flag = 1, so every data-driven quantity below -- the beta0 prior
+  # location, the smoothing bandwidth, and the pilot fits for the adaptive IQ
+  # weights -- must be computed on that same scale. The jitter u ~ Beta(1,1) is
+  # approximated by its prior mean 0.5.
+  if (log_flag == 1) {
+    y_shift <- if (jittering == 1) 0.5 else 0
+    if (any(y + y_shift <= 0)) {
+      stop("log_flag = 1 requires y (plus the 0.5 jitter midpoint when ",
+           "jittering = 1) to be strictly positive.")
+    }
+    y_model <- log(y + y_shift)
+  } else {
+    y_model <- y
+  }
+
   # Smoothing bandwidth (Fernandes, Guerre & Horta 2021 rule-of-thumb; Silverman 1986):
   #   base_scale = 1.06 * s * n^(-1/5),  s = min(sd, IQR / 1.38898) of the standard
   # median (tau = 0.5) regression residuals. The pilot median fit uses only the
@@ -767,29 +793,33 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
         requireNamespace("quantreg", quietly = TRUE)) {
       Xd_med <- cbind(1, as.matrix(X))
       fit_med <- try(suppressWarnings(
-        quantreg::rq(y ~ Xd_med - 1, tau = 0.5, method = "fn")), silent = TRUE)
+        quantreg::rq(y_model ~ Xd_med - 1, tau = 0.5, method = "fn")), silent = TRUE)
       med_resid <- if (inherits(fit_med, "try-error")) {
-        y - as.numeric(stats::quantile(y, 0.5))
+        y_model - as.numeric(stats::quantile(y_model, 0.5))
       } else {
-        y - as.numeric(Xd_med %*% as.numeric(stats::coef(fit_med)))
+        y_model - as.numeric(Xd_med %*% as.numeric(stats::coef(fit_med)))
       }
     } else {
-      med_resid <- y - as.numeric(stats::quantile(y, 0.5))
+      med_resid <- y_model - as.numeric(stats::quantile(y_model, 0.5))
     }
     s_disp <- min(stats::sd(med_resid), stats::IQR(med_resid) / 1.38898)
     base_scale <- max(1e-8, 1.06 * s_disp * length(y)^(-1 / 5))
   }
 
-  # beta0 prior location: per-quantile level of the warm-up window
+  # beta0 prior location: per-quantile level of the warm-up window, on the
+  # modeling scale (log scale when log_flag = 1)
   if (w > 0) {
-    beta0_loc <- stats::quantile(y[1:w], probs = taus)
+    beta0_loc <- stats::quantile(y_model[1:w], probs = taus)
   } else {
-    beta0_loc <- stats::quantile(y, probs = taus)
+    beta0_loc <- stats::quantile(y_model, probs = taus)
   }
   beta0_loc <- as.vector(beta0_loc)
 
-  # beta0 prior scale: fixed weakly-informative default (Gelman et al. 2013), decoupled
-  # from the smoothing bandwidth; accepts scalar or length-m vector. Set to your data scale.
+  # beta0 prior scale: the fixed default 10 is effectively flat relative to most
+  # data scales, so the warm-up centering above carries no weight unless the user
+  # supplies a scale on the modeling scale of y (scalar or length-m vector), e.g.
+  # c * sqrt(taus * (1 - taus) / w) / f_hat with f_hat a density estimate of the
+  # warm-up window at its quantiles (cf. Yang & He 2012's intercept anchoring).
   if (is.null(beta0_scale)) {
     beta0_scale <- rep(10, m)
   } else if (length(beta0_scale) == 1L) {
@@ -813,7 +843,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
     pilot_coefs <- matrix(NA, nrow = m, ncol = d_pilot)
     for (q in seq_len(m)) {
       pilot_coefs[q, ] <- safe_pilot_coefs(
-        y = y, Z = Z_pilot, tau = taus[q], eps_w = eps_w
+        y = y_model, Z = Z_pilot, tau = taus[q], eps_w = eps_w
       )
     }
 
@@ -1170,6 +1200,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
     y = y, H = H, X = X,
     hessian = hessian,
     fit_method = fit_method,
-    laplace_samples = laplace_samples
+    laplace_samples = laplace_samples,
+    stan_data = stan_data
   )
 }

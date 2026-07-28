@@ -11,7 +11,6 @@ cv_copss_map(
   X = NULL,
   w,
   grid_lambda_nc,
-  eps_rel = 0.1,
   prior_beta = "normal",
   prior_gamma = "spike_slab",
   map_iter = 2000,
@@ -29,8 +28,6 @@ cv_copss_map(
 \item{w}{Integer; passed to \code{getModel}.}
 
 \item{grid_lambda_nc}{Numeric vector of candidate \code{lambda_nc} (non-crossing penalty).}
-
-\item{eps_rel}{Smoothing temperature (default 0.1).}
 
 \item{prior_beta}{Prior type for betaX (default "normal").}
 
