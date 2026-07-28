@@ -588,19 +588,13 @@ getEta <- function(fit_result, H = NULL, X = NULL, offset = NULL, n_samples = 10
 #'   \code{qss} flags are derived from \code{basis} and \code{statistic} unless passed
 #'   explicitly.
 #' @param seed Random seed (only used when generating new Laplace samples).
-#' @param calibrated Logical or NULL (default NULL = derive). If TRUE, run the UI test
-#'   on the quantile basis; \code{significant_calib} is its calibrated (single-step max)
-#'   member of the adjustment family.
-#' @param block_test Logical or NULL (default NULL = derive). If TRUE, run the Hotelling
-#'   \eqn{T^2} on the quantile basis (\code{significant_wald_*}, \code{W_block}).
-#' @param qss Logical or NULL (default NULL = derive). If TRUE, run the requested test(s)
-#'   on the QSS basis — the four shape-shift contrasts (Appendix C) L = \eqn{\gamma_{.5}},
-#'   S = \eqn{\gamma_{.75}-\gamma_{.25}}, Sk = \eqn{\gamma_{.25}-2\gamma_{.5}+\gamma_{.75}},
-#'   K = \eqn{\gamma_{.975}-\gamma_{.75}+\gamma_{.25}-\gamma_{.025}} (tail excess)
-#'   (\code{significant_qss_*}, \code{significant_qss_t2_*}).
-#'   Requires the five-quantile grid (0.025, 0.25, 0.5, 0.75, 0.975).
-#' @param n_calib Retained for backward compatibility; unused (the whitened tests are
-#'   analytic and need no Monte-Carlo calibration).
+#' @param calibrated,block_test,qss DEPRECATED — use \code{basis} and \code{statistic},
+#'   which express every test combination (\code{calibrated} = UI on the quantile
+#'   basis, \code{block_test} = Hotelling \eqn{T^2} on the quantile basis,
+#'   \code{qss} = the QSS shape-contrast family). When left \code{NULL} (default)
+#'   they are derived from \code{basis} x \code{statistic}; passing them explicitly
+#'   still overrides for now, with a deprecation warning, and will stop being
+#'   accepted in a future version.
 #' @return A list. \code{tests[[basis]]} (\code{"quantile"} / \code{"qss"}) carries
 #'   \code{$z} (studentized cells), \code{$z_white} (whitened), \code{$cellstat}
 #'   (whitened \eqn{\tilde z^2}), and \code{$ui} / \code{$hotelling_t2} — each with
@@ -618,11 +612,19 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
                                      basis = c("quantile", "qss"),
                                      statistic = c("ui", "hotelling_t2"),
                                      calibrated = NULL, block_test = NULL, qss = NULL,
-                                     n_calib = 2000L,
                                      seed = NULL) {
 
   # Validate signal_position argument
   signal_position <- match.arg(signal_position)
+
+  # Legacy test-selection flags: accepted with a warning for now (they override
+  # the basis/statistic interface); scheduled for removal.
+  if (!is.null(calibrated) || !is.null(block_test) || !is.null(qss)) {
+    warning("'calibrated', 'block_test', and 'qss' are deprecated in ",
+            "detectChangepoints_gamma(); use 'basis' and 'statistic' instead. ",
+            "Explicit values still override for now but will be removed.",
+            call. = FALSE)
+  }
 
   # ---- Two-family / two-statistic API ---------------------------------------
   # `basis`     : which test family to run — "quantile" (the raw quantile gammas)
@@ -1003,7 +1005,7 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
     overall_t2_qss = overall_t2_qss, overall_t2_qss_p = overall_t2_qss_p,
     # ---- configuration ----
     signal_position = signal_position, alpha = alpha,
-    basis = basis, statistic = statistic,
+    basis = basis, statistic = statistic, taus = taus,
     calibrated = calibrated, block_test = block_test, qss = qss
   )
 }

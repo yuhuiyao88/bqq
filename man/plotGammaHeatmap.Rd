@@ -7,14 +7,11 @@
 plotGammaHeatmap(
   fit,
   detection = NULL,
-  taus = NULL,
-  scale = 1,
-  alpha = 0.05,
   block_labels = NULL,
   title = NULL,
   sig_block = NULL,
   basis = NULL,
-  whiten = FALSE
+  adjust = c("calib", "raw", "holm", "bonf", "bh")
 )
 }
 \arguments{
@@ -25,13 +22,8 @@ plotGammaHeatmap(
 are bordered. Older results without those fields fall back to a quantile panel
 (Holm-bordered), plus a QSS panel if \code{z_qss} is present.}
 
-\item{taus}{Quantile levels (default recovered from \code{fit}).}
-
-\item{scale}{Multiply coefficients for display (e.g. the fitting SD).}
-
-\item{alpha}{Significance level for the cell borders (default 0.05).}
-
-\item{block_labels}{Optional labels for the block (x) axis (default block index).}
+\item{block_labels}{Optional labels for the block (x) axis (default block index).
+Must be unique (they become factor levels).}
 
 \item{title}{Optional plot title.}
 
@@ -43,10 +35,14 @@ bordered columns. Default \code{NULL} keeps the detection-driven behavior.}
 \item{basis}{Optional character vector (\code{"quantile"}, \code{"qss"}) to force
 which panel(s) to draw, overriding the auto-detection from \code{detection}.}
 
-\item{whiten}{Logical (default FALSE). If FALSE, display the studentized cell
-z-scores (raw, interpretable — quantiles or L/S/Sk/K). If TRUE, display the
-whitened squared z-scores (the cell-level Hotelling contributions that sum to
-the block and overall T^2). Requires a \code{detection} object.}
+\item{adjust}{Which member of the across-block adjustment family determines the
+outlined (significant) blocks: \code{"calib"} (default; the calibrated
+single-step charting-constant rule), \code{"raw"}, \code{"holm"},
+\code{"bonf"}, or \code{"bh"}, as computed by
+\code{detectChangepoints_gamma()}. The quantile levels, significance level,
+and display convention are all inherited from \code{detection}: the fill is
+the studentized z when the recorded statistic is \code{"ui"}, and the
+whitened \eqn{\tilde z^2} Hotelling cells when it is \code{"hotelling_t2"}.}
 }
 \value{
 A ggplot object when one family is shown; a \pkg{patchwork} of two panels

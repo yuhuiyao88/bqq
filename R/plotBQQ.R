@@ -193,10 +193,16 @@ plotQSSProcess <- function(fit, eta = NULL, H = NULL, X = NULL, time = NULL, tau
 #'   \code{basis}/\code{statistic} fields drive which panels appear and how cells
 #'   are bordered. Older results without those fields fall back to a quantile panel
 #'   (Holm-bordered), plus a QSS panel if \code{z_qss} is present.
-#' @param taus Quantile levels (default recovered from \code{fit}).
-#' @param scale Multiply coefficients for display (e.g. the fitting SD).
-#' @param alpha Significance level for the cell borders (default 0.05).
 #' @param block_labels Optional labels for the block (x) axis (default block index).
+#'   Must be unique (they become factor levels).
+#' @param adjust Which member of the across-block adjustment family determines the
+#'   outlined (significant) blocks: \code{"calib"} (default; the calibrated
+#'   single-step charting-constant rule), \code{"raw"}, \code{"holm"},
+#'   \code{"bonf"}, or \code{"bh"}, as computed by
+#'   \code{detectChangepoints_gamma()}. The quantile levels, significance level,
+#'   and display convention are all inherited from \code{detection}: the fill is
+#'   the studentized z when the recorded statistic is \code{"ui"}, and the
+#'   whitened \eqn{\tilde z^2} Hotelling cells when it is \code{"hotelling_t2"}.
 #' @param title Optional plot title.
 #' @param sig_block Optional length-\code{r} logical vector of significant blocks.
 #'   When supplied it takes precedence for the quantile panel: every cell in a
@@ -204,19 +210,18 @@ plotQSSProcess <- function(fit, eta = NULL, H = NULL, X = NULL, time = NULL, tau
 #'   bordered columns. Default \code{NULL} keeps the detection-driven behavior.
 #' @param basis Optional character vector (\code{"quantile"}, \code{"qss"}) to force
 #'   which panel(s) to draw, overriding the auto-detection from \code{detection}.
-#' @param whiten Logical (default FALSE). If FALSE, display the studentized cell
-#'   z-scores (raw, interpretable — quantiles or L/S/Sk/K). If TRUE, display the
-#'   whitened squared z-scores (the cell-level Hotelling contributions that sum to
-#'   the block and overall T^2). Requires a \code{detection} object.
 #' @return A ggplot object when one family is shown; a \pkg{patchwork} of two panels
 #'   when both are shown (or a named list of ggplots if \pkg{patchwork} is absent).
 #' @export
-plotGammaHeatmap <- function(fit, detection = NULL, taus = NULL, scale = 1,
-                             alpha = 0.05, block_labels = NULL, title = NULL,
-                             sig_block = NULL, basis = NULL, whiten = FALSE) {
+plotGammaHeatmap <- function(fit, detection = NULL, block_labels = NULL,
+                             title = NULL, sig_block = NULL, basis = NULL,
+                             adjust = c("calib", "raw", "holm", "bonf", "bh")) {
+  adjust <- match.arg(adjust)
   .bqq_need_ggplot2()
   pal <- .bqq_pal
-  taus <- .bqq_taus(fit, taus); m <- length(taus)
+  taus <- if (!is.null(detection) && !is.null(detection$taus)) detection$taus
+          else .bqq_taus(fit, NULL)
+  m <- length(taus)
   r <- if (!is.null(fit$H)) ncol(fit$H) else 0L
   if (r == 0) stop("No block-shift design (fit$H has no columns).", call. = FALSE)
   blk <- if (!is.null(block_labels)) block_labels else seq_len(r)
@@ -233,6 +238,35 @@ plotGammaHeatmap <- function(fit, detection = NULL, taus = NULL, scale = 1,
   if (length(fams) == 0) fams <- "quantile"
   stat <- if (!is.null(detection) && !is.null(detection$statistic)) detection$statistic else "ui"
   use_t2 <- ("hotelling_t2" %in% stat) && !("ui" %in% stat)   # UI wins if both requested
+  stat_name <- if (use_t2) "hotelling_t2" else "ui"
+  # Display convention follows the statistic: UI -> studentized z (the cells whose
+  # block max is the UI statistic); T2 -> whitened z^2 cells (which sum to T2).
+  whiten <- use_t2
+
+  ## ---- significant blocks for a family: sig_block override wins; otherwise the
+  ## requested member of the across-block adjustment family {raw, holm, bonf, bh,
+  ## calib} from detection$tests; older detection objects without $tests fall
+  ## back to the flat calibrated aliases (calib only). ----
+  get_sig <- function(fam) {
+    if (!is.null(sig_block)) return(which(as.logical(sig_block)))
+    if (is.null(detection)) return(integer(0))
+    fam_res <- detection$tests[[fam]]
+    if (!is.null(fam_res) && !is.null(fam_res[[stat_name]]) &&
+        !is.null(fam_res[[stat_name]][[adjust]])) {
+      return(fam_res[[stat_name]][[adjust]])
+    }
+    if (adjust != "calib") {
+      warning("adjust = '", adjust, "' requested but this detection object does ",
+              "not carry the adjustment family; using the calibrated flags.",
+              call. = FALSE)
+    }
+    if (fam == "qss") {
+      if (use_t2) detection$significant_qss_t2_calib else detection$significant_qss_calib
+    } else {
+      if (use_t2) detection$significant_wald_calib else detection$significant_calib
+    }
+  }
+  outline_lab <- paste0("  (outlined: ", if (use_t2) "T2" else "UI", "/", adjust, ")")
 
   ## ---- single-panel builder; sig_cols = significant blocks (whole-column border) ----
   heat <- function(vals, rowlab, sig_cols, fill_lab, subtitle, diverging) {
@@ -264,13 +298,11 @@ plotGammaHeatmap <- function(fit, detection = NULL, taus = NULL, scale = 1,
       flab <- if (whiten) expression(tilde(z)^2) else "z"
       sub  <- if (whiten) "quantile: whitened z² (Hotelling cells)" else "quantile: studentized z"
     } else {
-      vals <- .bqq_coefs(fit, m, r)$gamma * scale; rl <- format(taus)
+      vals <- .bqq_coefs(fit, m, r)$gamma; rl <- format(taus)
       flab <- expression(gamma); sub <- "quantile: block-shift gamma"
     }
-    sig_cols <- if (!is.null(sig_block)) which(as.logical(sig_block))
-                else if (use_t2) detection$significant_wald_calib
-                else if (!is.null(detection)) detection$significant_calib else integer(0)
-    panels$quantile <- heat(vals, rl, sig_cols, flab, sub, diverging = !whiten)
+    if (!is.null(detection)) sub <- paste0(sub, outline_lab)
+    panels$quantile <- heat(vals, rl, get_sig("quantile"), flab, sub, diverging = !whiten)
   }
 
   ## ---- QSS panel ----
@@ -279,8 +311,8 @@ plotGammaHeatmap <- function(fit, detection = NULL, taus = NULL, scale = 1,
     rl   <- rownames(detection$z_qss); if (is.null(rl)) rl <- c("L", "S", "Sk", "K")
     flab <- if (whiten) expression(tilde(z)^2) else "z"
     sub  <- if (whiten) "QSS: whitened z² (Hotelling cells)" else "QSS: studentized shape contrasts"
-    sig_cols <- if (use_t2) detection$significant_qss_t2_calib else detection$significant_qss_calib
-    panels$qss <- heat(vals, rl, sig_cols, flab, sub, diverging = !whiten)
+    sub <- paste0(sub, outline_lab)
+    panels$qss <- heat(vals, rl, get_sig("qss"), flab, sub, diverging = !whiten)
   }
 
   ## ---- return one panel, or stack both ----

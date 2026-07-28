@@ -19,7 +19,6 @@ detectChangepoints_gamma(
   calibrated = NULL,
   block_test = NULL,
   qss = NULL,
-  n_calib = 2000L,
   seed = NULL
 )
 }
@@ -67,22 +66,13 @@ is a deprecated alias for \code{"ui"}. The legacy \code{calibrated}/\code{block_
 \code{qss} flags are derived from \code{basis} and \code{statistic} unless passed
 explicitly.}
 
-\item{calibrated}{Logical or NULL (default NULL = derive). If TRUE, run the UI test
-on the quantile basis; \code{significant_calib} is its calibrated (single-step max)
-member of the adjustment family.}
-
-\item{block_test}{Logical or NULL (default NULL = derive). If TRUE, run the Hotelling
-\eqn{T^2} on the quantile basis (\code{significant_wald_*}, \code{W_block}).}
-
-\item{qss}{Logical or NULL (default NULL = derive). If TRUE, run the requested test(s)
-on the QSS basis — the four shape-shift contrasts (Appendix C) L = \eqn{\gamma_{.5}},
-S = \eqn{\gamma_{.75}-\gamma_{.25}}, Sk = \eqn{\gamma_{.25}-2\gamma_{.5}+\gamma_{.75}},
-K = \eqn{\gamma_{.975}-\gamma_{.75}+\gamma_{.25}-\gamma_{.025}} (tail excess)
-(\code{significant_qss_*}, \code{significant_qss_t2_*}).
-Requires the five-quantile grid (0.025, 0.25, 0.5, 0.75, 0.975).}
-
-\item{n_calib}{Retained for backward compatibility; unused (the whitened tests are
-analytic and need no Monte-Carlo calibration).}
+\item{calibrated, block_test, qss}{DEPRECATED — use \code{basis} and \code{statistic},
+which express every test combination (\code{calibrated} = UI on the quantile
+basis, \code{block_test} = Hotelling \eqn{T^2} on the quantile basis,
+\code{qss} = the QSS shape-contrast family). When left \code{NULL} (default)
+they are derived from \code{basis} x \code{statistic}; passing them explicitly
+still overrides for now, with a deprecation warning, and will stop being
+accepted in a future version.}
 
 \item{seed}{Random seed (only used when generating new Laplace samples).}
 }
