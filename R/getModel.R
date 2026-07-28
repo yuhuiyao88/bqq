@@ -1029,6 +1029,69 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
     }
   }
 
+  # Run rstan::optimizing with its generic "non-zero return code" warning
+  # replaced by an informative termination record. Under the tight default
+  # tolerances, L-BFGS commonly exits with code 70 (line search cannot further
+  # improve the objective) -- the expected exit at a converged optimum for this
+  # objective. Exit code 0 only means a stopping tolerance fired first; it is
+  # not by itself evidence of a better fit (see map_init/tolerance docs).
+  run_optimizing <- function(opt_args) {
+    res <- withCallingHandlers(
+      do.call(rstan::optimizing, opt_args),
+      warning = function(w) {
+        if (grepl("non-zero return code", conditionMessage(w), fixed = TRUE)) {
+          invokeRestart("muffleWarning")
+        }
+      }
+    )
+    rc <- res$return_code
+    res$termination <- if (identical(rc, 0L)) {
+      "converged: a stopping tolerance was met"
+    } else if (identical(rc, 70L)) {
+      paste0("line search exhausted (exit code 70): no direction improves the ",
+             "objective further; expected at a converged optimum")
+    } else {
+      sprintf("optimizer exit code %s", rc)
+    }
+    if (!identical(rc, 0L) && !identical(rc, 70L)) {
+      warning("MAP optimization ended with unusual exit code ", rc,
+              "; check fit quality via fit$map$coverage and fit$map$value.")
+    }
+    res
+  }
+
+  # Fit-quality diagnostic: empirical coverage of the fitted quantile curves,
+  # colMeans(y < eta_tau), which should sit near tau. Guards against silently
+  # bad MAP modes (curves stranded away from the data) -- loud where the
+  # optimizer's exit code is uninformative.
+  map_coverage_check <- function(par_vec) {
+    tryCatch({
+      b0 <- par_vec[sprintf("beta0[%d]", seq_len(m))]
+      eta <- matrix(rep(b0, each = n), n, m)
+      if (px > 0) {
+        bX <- matrix(par_vec[grep("^betaX\\[", names(par_vec))], nrow = m)
+        eta <- eta + X %*% t(bX)
+      }
+      if (r > 0) {
+        gm <- matrix(par_vec[grep("^gamma\\[", names(par_vec))], nrow = m)
+        eta <- eta + H %*% t(gm)
+      }
+      eta <- eta + offset
+      cov_hat <- colMeans(y_model < eta)
+      names(cov_hat) <- paste0("tau=", taus)
+      tol_cov <- pmax(0.10, 4 * sqrt(taus * (1 - taus) / n))
+      if (any(abs(cov_hat - taus) > tol_cov)) {
+        warning("MAP fit-quality check: empirical coverage of the fitted ",
+                "quantile curves deviates from the target levels (",
+                paste(sprintf("%.3f vs %.3f", cov_hat, taus), collapse = "; "),
+                "). The optimizer may have stopped in a poor mode; consider ",
+                "map_init = 'prior_center', a larger map_iter, or tighter ",
+                "tolerances.", call. = FALSE)
+      }
+      cov_hat
+    }, error = function(e) NULL)
+  }
+
   # Compile Stan model once per session (cached)
   if (is.null(.bqq_stan_cache$sm)) {
     if (verbose) message("Compiling BQQ Stan model (one-time per session)...")
@@ -1280,7 +1343,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
     if (!is.null(map_tol_rel_obj))   opt_args$tol_rel_obj   <- map_tol_rel_obj
     if (!is.null(map_history_size)) opt_args$history_size  <- map_history_size
     if (!is.null(map_iter))          opt_args$iter          <- map_iter
-    map_fit <- do.call(rstan::optimizing, opt_args)
+    map_fit <- run_optimizing(opt_args)
     map_fit$estimator <- "map"
 
     hessian <- if (map_hessian && !is.null(map_fit$hessian)) map_fit$hessian else NULL
@@ -1315,8 +1378,9 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
     if (!is.null(map_tol_rel_obj))   opt_args$tol_rel_obj   <- map_tol_rel_obj
     if (!is.null(map_history_size)) opt_args$history_size  <- map_history_size
     if (!is.null(map_iter))          opt_args$iter          <- map_iter
-    map_fit <- do.call(rstan::optimizing, opt_args)
+    map_fit <- run_optimizing(opt_args)
     map_fit$estimator <- "map"
+    map_fit$coverage <- map_coverage_check(map_fit$par)
 
     hessian <- if (map_hessian && !is.null(map_fit$hessian)) map_fit$hessian else NULL
 
