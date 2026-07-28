@@ -15,6 +15,7 @@ getModel(
   eps_w = 1e-06,
   c_sigma = 1,
   base_scale = NULL,
+  beta0_loc = NULL,
   beta0_scale = NULL,
   beta_sd = 1,
   lambda_nc = 2,
@@ -36,13 +37,14 @@ getModel(
   seed = 123,
   verbose = FALSE,
   map_hessian = TRUE,
-  map_init = c("prior_center", "random"),
+  map_init = c("pilot", "prior_center", "random"),
   map_tol_obj = 1e-12,
   map_tol_grad = 1e-08,
   map_tol_rel_grad = 100,
   map_tol_param = 1e-08,
   map_tol_rel_obj = 100,
   map_iter = 10000,
+  map_history_size = 25,
   fit_method = c("mcmc", "map_mcmc", "map"),
   laplace_n_samples = 1000,
   laplace_noise_scale = 0.1,
@@ -92,16 +94,23 @@ predictors [intercept | X] only (the change-point design H is excluded). Used
 as the smoothing temperature \code{smooth_T = base_scale}; it does NOT set
 \code{beta0_scale}.}
 
+\item{beta0_loc}{Prior location for the per-quantile intercept \code{beta0};
+\code{NULL} (default) or a length-\code{m} numeric vector on the modeling
+scale of \code{y}. When \code{NULL}, set to the empirical \code{taus}-quantiles
+of the warm-up window \code{y_model[1:w]} — the empirical-quantile anchoring
+of the tau-specific intercept of Yang and He (2012, Annals of Statistics).}
+
 \item{beta0_scale}{Prior std dev for the per-quantile intercept \code{beta0};
-a positive scalar (recycled) or length-\code{m} vector, on the modeling scale
-of \code{y} (log scale when \code{log_flag = 1}). The default \code{10} is
-effectively flat on most data scales, leaving the warm-up centering inert;
-for an informative quantile-specific prior use, e.g.,
-\code{c * sqrt(taus * (1 - taus) / w) / f_hat}, where \code{f_hat} is a kernel
-density estimate of the warm-up window evaluated at its \code{taus} quantiles
-(the standard error of the warm-up quantile, times an inflation \code{c}). The
-prior is \code{beta0[q] ~ Normal(quantile(y_model[1:w], tau_q), beta0_scale[q])}
-with \code{y_model} the modeling-scale response.}
+\code{NULL} (default), a positive scalar (recycled), or a length-\code{m}
+vector, on the modeling scale of \code{y} (log scale when \code{log_flag = 1}).
+When \code{NULL}, set to the unit-information prior of Kass and Wasserman
+(1995): \code{sqrt(taus * (1 - taus)) / f_hat}, with \code{f_hat} a kernel
+density estimate of the warm-up window evaluated at \code{beta0_loc}, so the
+prior carries the information of a single warm-up observation about each
+quantile. Together with the default \code{beta0_loc} this equals the power
+prior on the warm-up window with discount \code{a0 = 1/w} (Ibrahim and Chen
+2000; Bourazas, Kiagias and Tsiamyrtzis 2022). The prior is
+\code{beta0[q] ~ Normal(beta0_loc[q], beta0_scale[q])}.}
 
 \item{beta_sd}{Positive scalar prior std dev for \code{betaX} coefficients under
 \code{prior_beta = "normal"} (default 1.0).}
@@ -166,14 +175,27 @@ sampling (see \code{\link{getLaplaceSamples}}). When \code{FALSE}, the Hessian
 is not computed and posterior samples are generated using a heuristic perturbation
 fallback instead.}
 
-\item{map_init}{Initialization for MAP optimization. \code{"prior_center"}
-(default) starts at the prior mode -- \code{beta0 = beta0_loc}, \code{betaX = 0},
-\code{gamma = 0}, hierarchy scales at 1 -- so the optimizer begins where the
-smoothed score has non-degenerate gradients. \code{"random"} restores rstan's
-default random initialization. Background: the logistic score saturates (clamped
-at |z| = 20) once a curve is ~20 bandwidths away from the data, leaving zero
-gradient; random inits can start (or wander) into such flat regions and produce
-runaway MAP modes.}
+\item{map_init}{Initialization for MAP optimization. \code{"pilot"} (default)
+fits a marginal LASSO quantile regression at each quantile level on
+\code{[1 | X | H]} (\code{quantreg::rq.fit.lasso}; intercept unpenalized,
+slope penalty at the \code{sqrt(tau(1-tau) n log d)} rate) and uses those
+estimates as the starting coefficients (clamped to a generous data range).
+The sparse, data-proximal start begins where the smoothed score has live
+gradients, matches the spike-slab prior's sparsity, and typically reduces
+the iteration count. It falls back to \code{"prior_center"} (with a
+warning) when the pilot fits are unavailable (no \code{X}/\code{H} columns,
+or \pkg{quantreg} missing).
+\code{"prior_center"} starts at the prior mode -- \code{beta0 = beta0_loc},
+\code{betaX = 0}, \code{gamma = 0}, hierarchy scales at 1 -- i.e., the
+in-control state. Mode-selection nuance: \code{"pilot"} approaches the
+optimum from the data-fitting side while \code{"prior_center"} grows the
+solution from the null; for multimodal spike-slab posteriors the two can
+select different modes, so compare the final log-posterior
+(\code{$map$value}) when in doubt. \code{"random"} restores rstan's default
+random initialization. Background: the logistic score saturates (clamped at
+|z| = 20) once a curve is ~20 bandwidths away from the data, leaving zero
+gradient; random inits can start (or wander) into such flat regions and
+produce runaway MAP modes.}
 
 \item{map_tol_obj, map_tol_grad, map_tol_rel_grad, map_tol_rel_obj, map_tol_param}{MAP optimizer (L-BFGS) tolerances. Defaults are deliberately tight
 (\code{map_tol_rel_grad = 1e2}, \code{map_tol_rel_obj = 1e2}, with
@@ -183,6 +205,11 @@ runaway MAP modes.}
 convergence, leaving outer-quantile coefficients stranded far from the optimum.}
 
 \item{map_iter}{Maximum iterations for MAP optimization.}
+
+\item{map_history_size}{L-BFGS history size (default 25; rstan's default is 5).
+A larger history improves the curvature approximation on this ridge-shaped
+objective, typically reducing the iteration count without loosening any
+stopping tolerance.}
 
 \item{fit_method}{One of "mcmc", "map_mcmc", or "map":
 \itemize{
@@ -243,7 +270,10 @@ coefficients.
       \item \eqn{y_i} is optionally jittered (\code{u ~ Beta(1,1)}) and/or log-transformed.
       \item Combined linear predictor
       \eqn{\eta_{qi} = \beta_{0,q} + x_i^\top \beta_{X,q} + h_i^\top \gamma_q + \mathrm{offset}_i}.
-      \item \eqn{\beta_{0,q}} is a per-quantile intercept with an informative prior centered at the warm-up-window quantiles.
+      \item \eqn{\beta_{0,q}} is a per-quantile intercept whose default prior is
+      centered at the warm-up-window empirical quantiles with unit-information
+      scale (Kass & Wasserman 1995) — equivalently, a power prior on the warm-up
+      window with discount \eqn{a_0 = 1/w} (Ibrahim & Chen 2000).
     }
   }
   \item{Interquantile shrinkage}{

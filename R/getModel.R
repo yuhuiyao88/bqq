@@ -21,7 +21,10 @@
 #'       \item \eqn{y_i} is optionally jittered (\code{u ~ Beta(1,1)}) and/or log-transformed.
 #'       \item Combined linear predictor
 #'       \eqn{\eta_{qi} = \beta_{0,q} + x_i^\top \beta_{X,q} + h_i^\top \gamma_q + \mathrm{offset}_i}.
-#'       \item \eqn{\beta_{0,q}} is a per-quantile intercept with an informative prior centered at the warm-up-window quantiles.
+#'       \item \eqn{\beta_{0,q}} is a per-quantile intercept whose default prior is
+#'       centered at the warm-up-window empirical quantiles with unit-information
+#'       scale (Kass & Wasserman 1995) — equivalently, a power prior on the warm-up
+#'       window with discount \eqn{a_0 = 1/w} (Ibrahim & Chen 2000).
 #'     }
 #'   }
 #'   \item{Interquantile shrinkage}{
@@ -62,16 +65,22 @@
 #'   predictors [intercept | X] only (the change-point design H is excluded). Used
 #'   as the smoothing temperature \code{smooth_T = base_scale}; it does NOT set
 #'   \code{beta0_scale}.
+#' @param beta0_loc Prior location for the per-quantile intercept \code{beta0};
+#'   \code{NULL} (default) or a length-\code{m} numeric vector on the modeling
+#'   scale of \code{y}. When \code{NULL}, set to the empirical \code{taus}-quantiles
+#'   of the warm-up window \code{y_model[1:w]} — the empirical-quantile anchoring
+#'   of the tau-specific intercept of Yang and He (2012, Annals of Statistics).
 #' @param beta0_scale Prior std dev for the per-quantile intercept \code{beta0};
-#'   a positive scalar (recycled) or length-\code{m} vector, on the modeling scale
-#'   of \code{y} (log scale when \code{log_flag = 1}). The default \code{10} is
-#'   effectively flat on most data scales, leaving the warm-up centering inert;
-#'   for an informative quantile-specific prior use, e.g.,
-#'   \code{c * sqrt(taus * (1 - taus) / w) / f_hat}, where \code{f_hat} is a kernel
-#'   density estimate of the warm-up window evaluated at its \code{taus} quantiles
-#'   (the standard error of the warm-up quantile, times an inflation \code{c}). The
-#'   prior is \code{beta0[q] ~ Normal(quantile(y_model[1:w], tau_q), beta0_scale[q])}
-#'   with \code{y_model} the modeling-scale response.
+#'   \code{NULL} (default), a positive scalar (recycled), or a length-\code{m}
+#'   vector, on the modeling scale of \code{y} (log scale when \code{log_flag = 1}).
+#'   When \code{NULL}, set to the unit-information prior of Kass and Wasserman
+#'   (1995): \code{sqrt(taus * (1 - taus)) / f_hat}, with \code{f_hat} a kernel
+#'   density estimate of the warm-up window evaluated at \code{beta0_loc}, so the
+#'   prior carries the information of a single warm-up observation about each
+#'   quantile. Together with the default \code{beta0_loc} this equals the power
+#'   prior on the warm-up window with discount \code{a0 = 1/w} (Ibrahim and Chen
+#'   2000; Bourazas, Kiagias and Tsiamyrtzis 2022). The prior is
+#'   \code{beta0[q] ~ Normal(beta0_loc[q], beta0_scale[q])}.
 #' @param beta_sd Positive scalar prior std dev for \code{betaX} coefficients under
 #'   \code{prior_beta = "normal"} (default 1.0).
 #' @param lambda_nc Positive scalar weight for the non-crossing penalty (larger is stricter).
@@ -124,15 +133,32 @@
 #'   (see \code{map_init}), and looser relative tolerances (e.g., rstan's default
 #'   \code{tol_rel_obj = 1e4}) can terminate there prematurely while reporting
 #'   convergence, leaving outer-quantile coefficients stranded far from the optimum.
+#' @param map_history_size L-BFGS history size (default 25; rstan's default is 5).
+#'   A larger history improves the curvature approximation on this ridge-shaped
+#'   objective, typically reducing the iteration count without loosening any
+#'   stopping tolerance.
 #' @param map_iter Maximum iterations for MAP optimization.
-#' @param map_init Initialization for MAP optimization. \code{"prior_center"}
-#'   (default) starts at the prior mode -- \code{beta0 = beta0_loc}, \code{betaX = 0},
-#'   \code{gamma = 0}, hierarchy scales at 1 -- so the optimizer begins where the
-#'   smoothed score has non-degenerate gradients. \code{"random"} restores rstan's
-#'   default random initialization. Background: the logistic score saturates (clamped
-#'   at |z| = 20) once a curve is ~20 bandwidths away from the data, leaving zero
-#'   gradient; random inits can start (or wander) into such flat regions and produce
-#'   runaway MAP modes.
+#' @param map_init Initialization for MAP optimization. \code{"pilot"} (default)
+#'   fits a marginal LASSO quantile regression at each quantile level on
+#'   \code{[1 | X | H]} (\code{quantreg::rq.fit.lasso}; intercept unpenalized,
+#'   slope penalty at the \code{sqrt(tau(1-tau) n log d)} rate) and uses those
+#'   estimates as the starting coefficients (clamped to a generous data range).
+#'   The sparse, data-proximal start begins where the smoothed score has live
+#'   gradients, matches the spike-slab prior's sparsity, and typically reduces
+#'   the iteration count. It falls back to \code{"prior_center"} (with a
+#'   warning) when the pilot fits are unavailable (no \code{X}/\code{H} columns,
+#'   or \pkg{quantreg} missing).
+#'   \code{"prior_center"} starts at the prior mode -- \code{beta0 = beta0_loc},
+#'   \code{betaX = 0}, \code{gamma = 0}, hierarchy scales at 1 -- i.e., the
+#'   in-control state. Mode-selection nuance: \code{"pilot"} approaches the
+#'   optimum from the data-fitting side while \code{"prior_center"} grows the
+#'   solution from the null; for multimodal spike-slab posteriors the two can
+#'   select different modes, so compare the final log-posterior
+#'   (\code{$map$value}) when in doubt. \code{"random"} restores rstan's default
+#'   random initialization. Background: the logistic score saturates (clamped at
+#'   |z| = 20) once a curve is ~20 bandwidths away from the data, leaving zero
+#'   gradient; random inits can start (or wander) into such flat regions and
+#'   produce runaway MAP modes.
 #' @param fit_method One of "mcmc", "map_mcmc", or "map":
 #'   \itemize{
 #'     \item "mcmc": Estimators are posterior median from MCMC; posterior draws from MCMC.
@@ -194,7 +220,8 @@
 
 getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
                         alpha = 0.75, eps_w = 1e-6, c_sigma = 1.0,
-                        base_scale = NULL, beta0_scale = NULL, beta_sd = 1.0,
+                        base_scale = NULL, beta0_loc = NULL, beta0_scale = NULL,
+                        beta_sd = 1.0,
                         lambda_nc = 2,
                         lambda_iq = 1,
                         adaptive_beta = TRUE,
@@ -208,11 +235,12 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
                         control = list(adapt_delta = 0.99),
                         seed = 123, verbose = FALSE,
                         map_hessian = TRUE,
-                        map_init = c("prior_center", "random"),
+                        map_init = c("pilot", "prior_center", "random"),
                         map_tol_obj = 1e-12, map_tol_grad = 1e-8,
                         map_tol_rel_grad = 1e2, map_tol_param = 1e-8,
                         map_tol_rel_obj = 1e2,
                         map_iter = 10000,
+                        map_history_size = 25,
                         fit_method = c("mcmc", "map_mcmc", "map"),
                         laplace_n_samples = 1000,
                         laplace_noise_scale = 0.1,
@@ -823,22 +851,38 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
     base_scale <- max(1e-8, 1.06 * s_disp * length(y)^(-1 / 5))
   }
 
-  # beta0 prior location: per-quantile level of the warm-up window, on the
-  # modeling scale (log scale when log_flag = 1)
-  if (w > 0) {
-    beta0_loc <- stats::quantile(y_model[1:w], probs = taus)
-  } else {
-    beta0_loc <- stats::quantile(y_model, probs = taus)
+  # beta0 prior location: defaults to the per-quantile empirical level of the
+  # warm-up window, on the modeling scale (log scale when log_flag = 1) --
+  # empirical-quantile anchoring of the tau-specific intercept in the sense of
+  # Yang & He (2012, Ann. Statist., p. 1107).
+  if (is.null(beta0_loc)) {
+    if (w > 0) {
+      beta0_loc <- stats::quantile(y_model[1:w], probs = taus)
+    } else {
+      beta0_loc <- stats::quantile(y_model, probs = taus)
+    }
   }
   beta0_loc <- as.vector(beta0_loc)
+  if (length(beta0_loc) != m || anyNA(beta0_loc)) {
+    stop("beta0_loc must be NULL or a length-m numeric vector without NAs.")
+  }
 
-  # beta0 prior scale: the fixed default 10 is effectively flat relative to most
-  # data scales, so the warm-up centering above carries no weight unless the user
-  # supplies a scale on the modeling scale of y (scalar or length-m vector), e.g.
-  # c * sqrt(taus * (1 - taus) / w) / f_hat with f_hat a density estimate of the
-  # warm-up window at its quantiles (cf. Yang & He 2012's intercept anchoring).
+  # beta0 prior scale: defaults to the unit-information prior (Kass & Wasserman
+  # 1995) -- the prior carries the information of a single warm-up observation
+  # about each quantile: sd = sqrt(tau (1 - tau)) / f_hat(beta0_loc), with f_hat
+  # a kernel density estimate of the warm-up window. Equivalently, the power
+  # prior on the warm-up window with discount a0 = 1/w (Ibrahim & Chen 2000;
+  # Bourazas, Kiagias & Tsiamyrtzis 2022). Override with a scalar or length-m
+  # vector on the modeling scale of y.
   if (is.null(beta0_scale)) {
-    beta0_scale <- rep(10, m)
+    yw <- if (w > 0) y_model[1:w] else y_model
+    if (length(unique(yw)) < 2L) {
+      stop("The warm-up window is (nearly) constant; supply beta0_scale explicitly.")
+    }
+    dw <- stats::density(yw)
+    f_hat <- stats::approx(dw$x, dw$y, xout = beta0_loc, rule = 2)$y
+    f_hat <- pmax(f_hat, 0.05 / diff(range(yw)))   # numerical floor for sparse tails
+    beta0_scale <- sqrt(taus * (1 - taus)) / f_hat
   } else if (length(beta0_scale) == 1L) {
     beta0_scale <- rep(beta0_scale, m)
   }
@@ -939,6 +983,51 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
     omega_group = as.array(rep(1, r)),
     u = as.array(rep(0.5, n))
   )
+
+  # Pilot-based initialization (map_init = "pilot"): marginal LASSO quantile
+  # regression per quantile level on [1 | X | H] via quantreg::rq.fit.lasso,
+  # with the intercept unpenalized and the slope penalty at the
+  # sqrt(tau (1 - tau) n log d) rate (cf. Belloni & Chernozhukov 2011). The
+  # sparse, data-proximal start begins inside the region where the smoothed
+  # score has live gradients and matches the spike-slab prior's sparsity.
+  # (The adaptive IQ weights keep their own pilot fits; this block is
+  # initialization only.) Mode-selection nuance: "pilot" approaches the optimum
+  # from the data-fitting side, whereas "prior_center" grows the solution from
+  # the in-control state; for multimodal spike-slab posteriors compare final lp.
+  init_pilot <- init_prior_center
+  if (map_init == "pilot") {
+    pilot_init <- NULL
+    if ((px + r) > 0 && requireNamespace("quantreg", quietly = TRUE)) {
+      Z_init <- cbind(1, X, H)
+      d_init <- ncol(Z_init)
+      pilot_init <- matrix(NA_real_, m, d_init)
+      for (q in seq_len(m)) {
+        lam_q <- sqrt(taus[q] * (1 - taus[q]) * n * log(d_init))
+        lam_vec <- c(0, rep(lam_q, d_init - 1L))  # do not penalize the intercept
+        fit_l <- try(suppressWarnings(
+          quantreg::rq.fit.lasso(Z_init, y_model, tau = taus[q], lambda = lam_vec)
+        ), silent = TRUE)
+        cf <- if (inherits(fit_l, "try-error")) NULL else as.numeric(fit_l$coefficients)
+        if (!is.null(cf) && length(cf) == d_init && all(is.finite(cf))) {
+          pilot_init[q, ] <- cf
+        }
+      }
+      if (anyNA(pilot_init)) pilot_init <- NULL
+    }
+    if (!is.null(pilot_init)) {
+      cap <- 5 * diff(range(y_model))
+      clamp <- function(x, ref = 0) ref + pmin(pmax(x - ref, -cap), cap)
+      init_pilot$beta0 <- as.array(clamp(pilot_init[, 1], beta0_loc))
+      if (px > 0) init_pilot$betaX <-
+        matrix(clamp(pilot_init[, 2:(px + 1), drop = FALSE]), m, px)
+      if (r > 0) init_pilot$gamma <-
+        matrix(clamp(pilot_init[, (px + 2):(px + 1 + r), drop = FALSE]), m, r)
+    } else {
+      warning("map_init = 'pilot' requested but rq.fit.lasso pilot fits are ",
+              "unavailable; falling back to 'prior_center'.")
+      map_init <- "prior_center"
+    }
+  }
 
   # Compile Stan model once per session (cached)
   if (is.null(.bqq_stan_cache$sm)) {
@@ -1183,11 +1272,13 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
       verbose = verbose
     )
     if (map_init == "prior_center") opt_args$init <- init_prior_center
+    else if (map_init == "pilot")   opt_args$init <- init_pilot
     if (!is.null(map_tol_obj))       opt_args$tol_obj       <- map_tol_obj
     if (!is.null(map_tol_grad))      opt_args$tol_grad      <- map_tol_grad
     if (!is.null(map_tol_rel_grad))  opt_args$tol_rel_grad  <- map_tol_rel_grad
     if (!is.null(map_tol_param))     opt_args$tol_param     <- map_tol_param
     if (!is.null(map_tol_rel_obj))   opt_args$tol_rel_obj   <- map_tol_rel_obj
+    if (!is.null(map_history_size)) opt_args$history_size  <- map_history_size
     if (!is.null(map_iter))          opt_args$iter          <- map_iter
     map_fit <- do.call(rstan::optimizing, opt_args)
     map_fit$estimator <- "map"
@@ -1216,11 +1307,13 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
       verbose = verbose
     )
     if (map_init == "prior_center") opt_args$init <- init_prior_center
+    else if (map_init == "pilot")   opt_args$init <- init_pilot
     if (!is.null(map_tol_obj))       opt_args$tol_obj       <- map_tol_obj
     if (!is.null(map_tol_grad))      opt_args$tol_grad      <- map_tol_grad
     if (!is.null(map_tol_rel_grad))  opt_args$tol_rel_grad  <- map_tol_rel_grad
     if (!is.null(map_tol_param))     opt_args$tol_param     <- map_tol_param
     if (!is.null(map_tol_rel_obj))   opt_args$tol_rel_obj   <- map_tol_rel_obj
+    if (!is.null(map_history_size)) opt_args$history_size  <- map_history_size
     if (!is.null(map_iter))          opt_args$iter          <- map_iter
     map_fit <- do.call(rstan::optimizing, opt_args)
     map_fit$estimator <- "map"
