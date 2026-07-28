@@ -36,11 +36,13 @@ getModel(
   seed = 123,
   verbose = FALSE,
   map_hessian = TRUE,
+  map_init = c("prior_center", "random"),
   map_tol_obj = 1e-12,
   map_tol_grad = 1e-08,
-  map_tol_rel_grad = 10000,
+  map_tol_rel_grad = 100,
   map_tol_param = 1e-08,
-  map_iter = 2000,
+  map_tol_rel_obj = 100,
+  map_iter = 10000,
   fit_method = c("mcmc", "map_mcmc", "map"),
   laplace_n_samples = 1000,
   laplace_noise_scale = 0.1,
@@ -164,7 +166,21 @@ sampling (see \code{\link{getLaplaceSamples}}). When \code{FALSE}, the Hessian
 is not computed and posterior samples are generated using a heuristic perturbation
 fallback instead.}
 
-\item{map_tol_obj, map_tol_grad, map_tol_rel_grad, map_tol_param}{MAP optimizer tolerances.}
+\item{map_init}{Initialization for MAP optimization. \code{"prior_center"}
+(default) starts at the prior mode -- \code{beta0 = beta0_loc}, \code{betaX = 0},
+\code{gamma = 0}, hierarchy scales at 1 -- so the optimizer begins where the
+smoothed score has non-degenerate gradients. \code{"random"} restores rstan's
+default random initialization. Background: the logistic score saturates (clamped
+at |z| = 20) once a curve is ~20 bandwidths away from the data, leaving zero
+gradient; random inits can start (or wander) into such flat regions and produce
+runaway MAP modes.}
+
+\item{map_tol_obj, map_tol_grad, map_tol_rel_grad, map_tol_rel_obj, map_tol_param}{MAP optimizer (L-BFGS) tolerances. Defaults are deliberately tight
+(\code{map_tol_rel_grad = 1e2}, \code{map_tol_rel_obj = 1e2}, with
+\code{map_iter = 10000}): the smoothed-score objective has near-flat plateaus
+(see \code{map_init}), and looser relative tolerances (e.g., rstan's default
+\code{tol_rel_obj = 1e4}) can terminate there prematurely while reporting
+convergence, leaving outer-quantile coefficients stranded far from the optimum.}
 
 \item{map_iter}{Maximum iterations for MAP optimization.}
 

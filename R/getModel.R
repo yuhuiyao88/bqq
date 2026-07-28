@@ -117,8 +117,22 @@
 #'   sampling (see \code{\link{getLaplaceSamples}}). When \code{FALSE}, the Hessian
 #'   is not computed and posterior samples are generated using a heuristic perturbation
 #'   fallback instead.
-#' @param map_tol_obj,map_tol_grad,map_tol_rel_grad,map_tol_param MAP optimizer tolerances.
+#' @param map_tol_obj,map_tol_grad,map_tol_rel_grad,map_tol_rel_obj,map_tol_param
+#'   MAP optimizer (L-BFGS) tolerances. Defaults are deliberately tight
+#'   (\code{map_tol_rel_grad = 1e2}, \code{map_tol_rel_obj = 1e2}, with
+#'   \code{map_iter = 10000}): the smoothed-score objective has near-flat plateaus
+#'   (see \code{map_init}), and looser relative tolerances (e.g., rstan's default
+#'   \code{tol_rel_obj = 1e4}) can terminate there prematurely while reporting
+#'   convergence, leaving outer-quantile coefficients stranded far from the optimum.
 #' @param map_iter Maximum iterations for MAP optimization.
+#' @param map_init Initialization for MAP optimization. \code{"prior_center"}
+#'   (default) starts at the prior mode -- \code{beta0 = beta0_loc}, \code{betaX = 0},
+#'   \code{gamma = 0}, hierarchy scales at 1 -- so the optimizer begins where the
+#'   smoothed score has non-degenerate gradients. \code{"random"} restores rstan's
+#'   default random initialization. Background: the logistic score saturates (clamped
+#'   at |z| = 20) once a curve is ~20 bandwidths away from the data, leaving zero
+#'   gradient; random inits can start (or wander) into such flat regions and produce
+#'   runaway MAP modes.
 #' @param fit_method One of "mcmc", "map_mcmc", or "map":
 #'   \itemize{
 #'     \item "mcmc": Estimators are posterior median from MCMC; posterior draws from MCMC.
@@ -194,9 +208,11 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
                         control = list(adapt_delta = 0.99),
                         seed = 123, verbose = FALSE,
                         map_hessian = TRUE,
+                        map_init = c("prior_center", "random"),
                         map_tol_obj = 1e-12, map_tol_grad = 1e-8,
-                        map_tol_rel_grad = 1e4, map_tol_param = 1e-8,
-                        map_iter = 2000,
+                        map_tol_rel_grad = 1e2, map_tol_param = 1e-8,
+                        map_tol_rel_obj = 1e2,
+                        map_iter = 10000,
                         fit_method = c("mcmc", "map_mcmc", "map"),
                         laplace_n_samples = 1000,
                         laplace_noise_scale = 0.1,
@@ -213,6 +229,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
   prior_beta  <- match.arg(prior_beta)
   prior_gamma <- match.arg(prior_gamma)
   fit_method  <- match.arg(fit_method)
+  map_init    <- match.arg(map_init)
   prior_beta_code <- switch(
     prior_beta,
     normal            = 1L,
@@ -901,6 +918,28 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
     w_iq_beta  = if (p_slope > 0) w_iq_beta else matrix(0, m - 1L, 0L)
   )
 
+  # Prior-center initialization for MAP optimization: start beta0 at its prior
+  # location, all shift/slope coefficients at 0, and the shrinkage hierarchy at
+  # neutral values. The smoothed score saturates (|z| clamped at 20) once a curve
+  # sits ~20 bandwidths from the data, leaving zero gradient there; random inits
+  # can start in (or reach) these flat regions and yield runaway MAP modes.
+  init_prior_center <- list(
+    beta0 = as.array(beta0_loc),
+    betaX = matrix(0, m, px),
+    gamma = matrix(0, m, r),
+    sigma2_beta_group = as.array(rep(1, px)),
+    sigma2_beta = matrix(1, m, px),
+    lambda2_beta_local = matrix(1, m, px),
+    sigma2_gamma_group = as.array(rep(1, r)),
+    sigma2_gamma = matrix(1, m, r),
+    lambda2_gamma_local = matrix(1, m, r),
+    lambda_beta2 = 1, lambda_lasso2 = 1,
+    pi_slab_beta = 0.5, pi_slab = 0.5,
+    omega_beta_group = as.array(rep(1, px)),
+    omega_group = as.array(rep(1, r)),
+    u = as.array(rep(0.5, n))
+  )
+
   # Compile Stan model once per session (cached)
   if (is.null(.bqq_stan_cache$sm)) {
     if (verbose) message("Compiling BQQ Stan model (one-time per session)...")
@@ -1143,10 +1182,12 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
       seed = seed,
       verbose = verbose
     )
+    if (map_init == "prior_center") opt_args$init <- init_prior_center
     if (!is.null(map_tol_obj))       opt_args$tol_obj       <- map_tol_obj
     if (!is.null(map_tol_grad))      opt_args$tol_grad      <- map_tol_grad
     if (!is.null(map_tol_rel_grad))  opt_args$tol_rel_grad  <- map_tol_rel_grad
     if (!is.null(map_tol_param))     opt_args$tol_param     <- map_tol_param
+    if (!is.null(map_tol_rel_obj))   opt_args$tol_rel_obj   <- map_tol_rel_obj
     if (!is.null(map_iter))          opt_args$iter          <- map_iter
     map_fit <- do.call(rstan::optimizing, opt_args)
     map_fit$estimator <- "map"
@@ -1174,10 +1215,12 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
       seed = seed,
       verbose = verbose
     )
+    if (map_init == "prior_center") opt_args$init <- init_prior_center
     if (!is.null(map_tol_obj))       opt_args$tol_obj       <- map_tol_obj
     if (!is.null(map_tol_grad))      opt_args$tol_grad      <- map_tol_grad
     if (!is.null(map_tol_rel_grad))  opt_args$tol_rel_grad  <- map_tol_rel_grad
     if (!is.null(map_tol_param))     opt_args$tol_param     <- map_tol_param
+    if (!is.null(map_tol_rel_obj))   opt_args$tol_rel_obj   <- map_tol_rel_obj
     if (!is.null(map_iter))          opt_args$iter          <- map_iter
     map_fit <- do.call(rstan::optimizing, opt_args)
     map_fit$estimator <- "map"
