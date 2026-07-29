@@ -97,7 +97,7 @@ as the smoothing temperature \code{smooth_T = base_scale}; it does NOT set
 \item{beta0_loc}{Prior location for the per-quantile intercept \code{beta0};
 \code{NULL} (default) or a length-\code{m} numeric vector on the modeling
 scale of \code{y}. When \code{NULL}, set to the empirical \code{taus}-quantiles
-of the warm-up window \code{y_model[1:w]} — the empirical-quantile anchoring
+of the warm-up period \code{y_model[1:w]} — the empirical-quantile anchoring
 of the tau-specific intercept of Yang and He (2012, Annals of Statistics).}
 
 \item{beta0_scale}{Prior std dev for the per-quantile intercept \code{beta0};
@@ -105,10 +105,10 @@ of the tau-specific intercept of Yang and He (2012, Annals of Statistics).}
 vector, on the modeling scale of \code{y} (log scale when \code{log_flag = 1}).
 When \code{NULL}, set to the unit-information prior of Kass and Wasserman
 (1995): \code{sqrt(taus * (1 - taus)) / f_hat}, with \code{f_hat} a kernel
-density estimate of the warm-up window evaluated at \code{beta0_loc}, so the
+density estimate of the warm-up period evaluated at \code{beta0_loc}, so the
 prior carries the information of a single warm-up observation about each
 quantile. Together with the default \code{beta0_loc} this equals the power
-prior on the warm-up window with discount \code{a0 = 1/w} (Ibrahim and Chen
+prior on the warm-up period with discount \code{a0 = 1/w} (Ibrahim and Chen
 2000; Bourazas, Kiagias and Tsiamyrtzis 2022). The prior is
 \code{beta0[q] ~ Normal(beta0_loc[q], beta0_scale[q])}.}
 
@@ -239,7 +239,10 @@ coefficient-level local scales, without pilot weights.}
 \item{beta_spike_sd, beta_slab_sd, beta_slab_pi_a, beta_slab_pi_b}{Spike-and-slab
 hyperparameters for \code{betaX}.}
 
-\item{spike_sd, slab_sd, slab_pi_a, slab_pi_b}{Spike-and-slab hyperparameters.}
+\item{spike_sd, slab_sd, slab_pi_a, slab_pi_b}{Spike-and-slab hyperparameters.
+NOTE: \code{spike_sd}/\code{slab_sd} are STANDARD DEVIATIONS; the
+manuscript's spike-and-slab specification is written in variances
+(variance = sd^2).}
 }
 \value{
 A list with components:

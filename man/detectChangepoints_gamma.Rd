@@ -2,7 +2,7 @@
 % Please edit documentation in R/getInference.R
 \name{detectChangepoints_gamma}
 \alias{detectChangepoints_gamma}
-\title{Detect change points using gamma coefficients}
+\title{Detect change-points using gamma coefficients}
 \usage{
 detectChangepoints_gamma(
   fit_result,
@@ -44,7 +44,8 @@ detectChangepoints_gamma(
 for backward compatibility when \code{fit_result$laplace_samples} is absent
 (a normal MAP fit already carries the draws, so this is otherwise ignored).}
 
-\item{alpha}{Significance level for all cell and block decisions (two-sided).}
+\item{alpha}{Significance level for all cell and block decisions (two-sided);
+this is the nominal false alarm probability FAP0 of the manuscript.}
 
 \item{basis}{Character vector selecting which test family/families to compute:
 \code{"quantile"} (the raw quantile block-gammas) and/or \code{"qss"} (the four
@@ -78,7 +79,9 @@ carry no decision arguments of their own.}
 A list. \code{tests[[basis]]} (\code{"quantile"} / \code{"qss"}) carries
   \code{$z} (studentized cells), \code{$z_white} (whitened), \code{$cellstat}
   (whitened \eqn{\tilde z^2}), and \code{$ui} / \code{$hotelling_t2} — each with
-  \code{stat}, \code{pvalue}, \code{adjp_holm/bonf/bh}, \code{c_block}, \code{c_calib}, and
+  \code{stat}, \code{pvalue} (the block posterior probability p_j of
+  Eqs. (21)/(23)), \code{adjp_holm/bonf/bh} (adjusted posterior probabilities),
+  \code{c_block}, \code{c_calib} (the charting constants), and
   \code{raw/holm/bonf/bh/calib} over the r blocks — plus \code{$overall_ui(_p)}
   and \code{$overall_t2(_p)}. \code{detected_blocks} carries the significance flags
   for all four charts (\code{significant_*}, \code{significant_wald_*},

@@ -5,7 +5,7 @@ statistical process monitoring. It fits a multi-quantile regression model jointl
 across quantile levels — a smoothed score likelihood with non-crossing and
 interquantile-shrinkage penalties and sparsity-inducing priors on blockwise shift
 coefficients, computed via [Stan](https://mc-stan.org/) — and detects distributional
-change points through calibrated block tests on the shift coefficients.
+change-points through calibrated block tests on the shift coefficients.
 
 ## Installation
 
@@ -28,7 +28,7 @@ devtools::install_github("yuhuiyao88/bqq")
 
 The BQQ methodology fits the five conditional quantiles (0.025, 0.25, 0.5, 0.75,
 0.975) jointly over time, anchors their in-control levels with a prior elicited from
-a warm-up window, and represents distributional changes through blockwise shift
+a warm-up period, and represents distributional changes through blockwise shift
 coefficients, so change-point detection becomes structured variable selection.
 The package provides:
 
@@ -36,7 +36,7 @@ The package provides:
   MAP-initialized MCMC, from a built-in Stan program
 - **An informative warm-up prior for the intercepts** (the default): each
   per-quantile intercept is centered at the warm-up-window empirical quantile with
-  unit-information scale — equivalently, a power prior on the warm-up window with
+  unit-information scale — equivalently, a power prior on the warm-up period with
   discount `a0 = 1/w`
 - **Sparsity-inducing priors** on the shift coefficients (spike-and-slab primary;
   LASSO, adaptive LASSO, group LASSO, heterogeneous group LASSO, and
@@ -64,7 +64,7 @@ n <- 360
 y <- rnorm(n)
 y[252:n] <- y[252:n] + 1
 
-# 2. Quantile levels, block design, warm-up window
+# 2. Quantile levels, block design, warm-up period
 taus <- c(0.025, 0.25, 0.5, 0.75, 0.975)
 l <- 30   # block length
 w <- 30   # warm-up period (in-control reference window)
@@ -95,7 +95,7 @@ det <- detectChangepoints_gamma(fit, taus = taus, l = l, w = w,
                                 y = y, eta = eta)
 
 # 6. Plots: pure renderers of the fit and the recorded detection decisions.
-plotQuantileProcess(fit, detection = det)        # bands + localized change points
+plotQuantileProcess(fit, detection = det)        # bands + localized change-points
 plotQSSProcess(fit, eta = eta, detection = det)  # QSS profiles + detected blocks
 plotGammaHeatmap(fit, det)                       # blocks (grey) + cells (black)
 ```
@@ -137,7 +137,7 @@ plotGammaHeatmap(fit, det)                       # blocks (grey) + cells (black)
 | Function | Description |
 |---|---|
 | `plotQuantileProcess()` | The five fitted quantile curves over time |
-| `plotGammaHeatmap()` | Shift heatmap: whitened-z fill, grey borders on flagged blocks, black borders on localized cells — all decisions (basis, statistic, `adjust`, constants) taken from the `detection` object; only display options (colors, labels, `mark_cells`) are settable |
+| `plotGammaHeatmap()` | Shift heatmap: whitened-z fill, grey borders on OOC blocks, black borders on localized cells — all decisions (basis, statistic, `adjust`, constants) taken from the `detection` object; only display options (colors, labels, `mark_cells`) are settable |
 | `plotQSSProcess()` | QSS profiles over time with credible bands and detected blocks |
 
 ## Model Details
@@ -153,10 +153,10 @@ kernel `min(τ,τ′) − ττ′` coupling the levels.
 ### Priors (defaults)
 
 - **Intercepts** `β0[q] ~ Normal(beta0_loc[q], beta0_scale[q])` with, by default,
-  `beta0_loc` = the empirical τ-quantiles of the warm-up window and `beta0_scale` =
+  `beta0_loc` = the empirical τ-quantiles of the warm-up period and `beta0_scale` =
   the **unit-information** scale `sqrt(τ(1−τ)) / f̂` (Kass & Wasserman, 1995), where
-  `f̂` is a kernel density estimate of the warm-up window. Together this equals the
-  power prior on the warm-up window with discount `a0 = 1/w` (Ibrahim & Chen, 2000;
+  `f̂` is a kernel density estimate of the warm-up period. Together this equals the
+  power prior on the warm-up period with discount `a0 = 1/w` (Ibrahim & Chen, 2000;
   Bourazas, Kiagias & Tsiamyrtzis, 2022), and anchors each intercept in the spirit
   of the empirical-quantile anchoring of Yang & He (2012). Both are overridable
   (`beta0_loc`, `beta0_scale`); with `log_flag = 1` everything is computed on the

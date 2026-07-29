@@ -32,7 +32,7 @@ Must be unique (they become factor levels).}
 \item{title}{Optional plot title.}
 
 \item{mark_cells}{Logical; when \code{TRUE} (default) the cells responsible for a
-flagged block are given a second, darker border. A block that the block-level
+OOC block are given a second, darker border. A block that the block-level
 rule flags is bordered in \code{block_color}; inside it, each cell whose
 cell-level posterior probability
 \eqn{p_{q,j} = 1 - P(\chi^2_1 \le \tilde z^2_{q,j})} falls below \code{alpha}
@@ -41,9 +41,9 @@ Section 3.2: it runs only inside blocks that have already signaled, so it
 localizes a detected shift rather than adding a new family of tests, and the
 false alarm probability remains that of the block-level rule.}
 
-\item{block_color}{Border colour for cells of a flagged block (default grey).}
+\item{block_color}{Border colour for cells of a OOC block (default grey).}
 
-\item{cell_color}{Border colour for the localized cells within a flagged block
+\item{cell_color}{Border colour for the localized cells within a OOC block
 (default black).}
 
 \item{pos_color, neg_color}{End colours of the diverging fill: positive
@@ -59,7 +59,7 @@ are stacked, \code{xlab}/\code{ylab} apply to each panel; \code{title} is
 applied once to the combined figure.}
 
 \item{show_onset, show_located}{Logical display toggles (default TRUE): draw
-the block-onset marks and the localized change points recorded in
+the block-onset marks and the localized change-points recorded in
 \code{detection}. They only hide layers; the decisions themselves are
 made (and recorded) by \code{detectChangepoints_gamma()}.}
 }

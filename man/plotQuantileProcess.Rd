@@ -28,7 +28,7 @@ as \code{value * scale + center} (e.g. the standardization used before fitting).
 \item{detection}{Optional \code{detectChangepoints_gamma()} result. Its recorded
 \code{basis} and \code{statistic} select which block test flags the blocks, and
 its \code{detected_blocks} supplies the block onset (vertical line) and the
-localized change point \code{signal_obs} (circled point on the series), the
+localized change-point \code{signal_obs} (circled point on the series), the
 latter obtained under whichever \code{signal_position} was passed to
 \code{detectChangepoints_gamma()}.}
 
@@ -42,7 +42,7 @@ regression residuals, or \code{"difference"} when it was fitted to their
 first-order differences. Use \code{NULL} to drop the label.}
 
 \item{show_onset, show_located}{Logical display toggles (default TRUE): draw
-the block-onset marks and the localized change points recorded in
+the block-onset marks and the localized change-points recorded in
 \code{detection}. They only hide layers; the decisions themselves are
 made (and recorded) by \code{detectChangepoints_gamma()}.}
 }
@@ -51,6 +51,6 @@ A ggplot object.
 }
 \description{
 Graph type 1: the observations with the five fitted quantile bands, and
-(optionally) crimson onset lines and within-block localized change points
+(optionally) crimson onset lines and within-block localized change-points
 from a \code{detectChangepoints_gamma()} result.
 }

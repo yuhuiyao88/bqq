@@ -68,17 +68,17 @@
 #' @param beta0_loc Prior location for the per-quantile intercept \code{beta0};
 #'   \code{NULL} (default) or a length-\code{m} numeric vector on the modeling
 #'   scale of \code{y}. When \code{NULL}, set to the empirical \code{taus}-quantiles
-#'   of the warm-up window \code{y_model[1:w]} — the empirical-quantile anchoring
+#'   of the warm-up period \code{y_model[1:w]} — the empirical-quantile anchoring
 #'   of the tau-specific intercept of Yang and He (2012, Annals of Statistics).
 #' @param beta0_scale Prior std dev for the per-quantile intercept \code{beta0};
 #'   \code{NULL} (default), a positive scalar (recycled), or a length-\code{m}
 #'   vector, on the modeling scale of \code{y} (log scale when \code{log_flag = 1}).
 #'   When \code{NULL}, set to the unit-information prior of Kass and Wasserman
 #'   (1995): \code{sqrt(taus * (1 - taus)) / f_hat}, with \code{f_hat} a kernel
-#'   density estimate of the warm-up window evaluated at \code{beta0_loc}, so the
+#'   density estimate of the warm-up period evaluated at \code{beta0_loc}, so the
 #'   prior carries the information of a single warm-up observation about each
 #'   quantile. Together with the default \code{beta0_loc} this equals the power
-#'   prior on the warm-up window with discount \code{a0 = 1/w} (Ibrahim and Chen
+#'   prior on the warm-up period with discount \code{a0 = 1/w} (Ibrahim and Chen
 #'   2000; Bourazas, Kiagias and Tsiamyrtzis 2022). The prior is
 #'   \code{beta0[q] ~ Normal(beta0_loc[q], beta0_scale[q])}.
 #' @param beta_sd Positive scalar prior std dev for \code{betaX} coefficients under
@@ -182,6 +182,9 @@
 #' @param beta_spike_sd,beta_slab_sd,beta_slab_pi_a,beta_slab_pi_b Spike-and-slab
 #'   hyperparameters for \code{betaX}.
 #' @param spike_sd,slab_sd,slab_pi_a,slab_pi_b Spike-and-slab hyperparameters.
+#'   NOTE: \code{spike_sd}/\code{slab_sd} are STANDARD DEVIATIONS; the
+#'   manuscript's spike-and-slab specification is written in variances
+#'   (variance = sd^2).
 #'
 #' @return A list with components:
 #'   \itemize{
@@ -852,7 +855,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
   }
 
   # beta0 prior location: defaults to the per-quantile empirical level of the
-  # warm-up window, on the modeling scale (log scale when log_flag = 1) --
+  # warm-up period, on the modeling scale (log scale when log_flag = 1) --
   # empirical-quantile anchoring of the tau-specific intercept in the sense of
   # Yang & He (2012, Ann. Statist., p. 1107).
   if (is.null(beta0_loc)) {
@@ -870,14 +873,14 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
   # beta0 prior scale: defaults to the unit-information prior (Kass & Wasserman
   # 1995) -- the prior carries the information of a single warm-up observation
   # about each quantile: sd = sqrt(tau (1 - tau)) / f_hat(beta0_loc), with f_hat
-  # a kernel density estimate of the warm-up window. Equivalently, the power
-  # prior on the warm-up window with discount a0 = 1/w (Ibrahim & Chen 2000;
+  # a kernel density estimate of the warm-up period. Equivalently, the power
+  # prior on the warm-up period with discount a0 = 1/w (Ibrahim & Chen 2000;
   # Bourazas, Kiagias & Tsiamyrtzis 2022). Override with a scalar or length-m
   # vector on the modeling scale of y.
   if (is.null(beta0_scale)) {
     yw <- if (w > 0) y_model[1:w] else y_model
     if (length(unique(yw)) < 2L) {
-      stop("The warm-up window is (nearly) constant; supply beta0_scale explicitly.")
+      stop("The warm-up period is (nearly) constant; supply beta0_scale explicitly.")
     }
     dw <- stats::density(yw)
     f_hat <- stats::approx(dw$x, dw$y, xout = beta0_loc, rule = 2)$y

@@ -551,7 +551,7 @@ getEta <- function(fit_result, H = NULL, X = NULL, offset = NULL, n_samples = 10
 # invert the block decision into its operative level t_j (Eq. 25's FAP_j^(0),
 # plus the raw and calibrated variants), convert to the cell constant on the
 # statistic's own scale -- UI: Phi^-1((1+(1-t_j)^(1/m))/2) on |z~|; T^2:
-# chi^2_m^-1(1-t_j) on z~^2 -- and flag cells INSIDE flagged blocks only. A cell
+# chi^2_m^-1(1-t_j) on z~^2 -- and flag cells INSIDE OOC blocks only. A cell
 # exceedance implies the block exceedance for both statistics, so the cells
 # localize the block decisions and introduce no additional hypothesis family.
 .bqq_cell_layer <- function(fam, zt_mat, alpha, kind) {
@@ -562,7 +562,7 @@ getEta <- function(fit_result, H = NULL, X = NULL, offset = NULL, n_samples = 10
     raw  = rep(alpha, r),                      # Eq. (21)/(23) block constants
     bonf = rep(alpha / r, r),                  # Eq. (25), Bonferroni
     holm = alpha / (r - ranks + 1),            # Eq. (25), Holm (rank k by ascending p)
-    bh   = rep(length(fam$bh) * alpha / r, r)  # Eq. (25), BH (k* = #flagged blocks)
+    bh   = rep(length(fam$bh) * alpha / r, r)  # Eq. (25), BH (k* = #OOC blocks)
   )
   const <- lapply(lev, function(t) {
     t <- pmin(pmax(t, 1e-12), 1 - 1e-12)
@@ -587,7 +587,7 @@ getEta <- function(fit_result, H = NULL, X = NULL, offset = NULL, n_samples = 10
   fam
 }
 
-#' Detect change points using gamma coefficients
+#' Detect change-points using gamma coefficients
 #'
 #' Uses the H-matrix gamma coefficients directly for change-point detection.
 #' This approach is more aligned with the model design where gamma explicitly
@@ -612,7 +612,8 @@ getEta <- function(fit_result, H = NULL, X = NULL, offset = NULL, n_samples = 10
 #' @param laplace_n_samples Number of Laplace draws generated on the fly, used only
 #'   for backward compatibility when \code{fit_result$laplace_samples} is absent
 #'   (a normal MAP fit already carries the draws, so this is otherwise ignored).
-#' @param alpha Significance level for all cell and block decisions (two-sided).
+#' @param alpha Significance level for all cell and block decisions (two-sided);
+#'   this is the nominal false alarm probability FAP0 of the manuscript.
 #' @param basis Character vector selecting which test family/families to compute:
 #'   \code{"quantile"} (the raw quantile block-gammas) and/or \code{"qss"} (the four
 #'   shape contrasts derived from those quantiles). Default is both; \code{"both"} is
@@ -640,7 +641,9 @@ getEta <- function(fit_result, H = NULL, X = NULL, offset = NULL, n_samples = 10
 #' @return A list. \code{tests[[basis]]} (\code{"quantile"} / \code{"qss"}) carries
 #'   \code{$z} (studentized cells), \code{$z_white} (whitened), \code{$cellstat}
 #'   (whitened \eqn{\tilde z^2}), and \code{$ui} / \code{$hotelling_t2} — each with
-#'   \code{stat}, \code{pvalue}, \code{adjp_holm/bonf/bh}, \code{c_block}, \code{c_calib}, and
+#'   \code{stat}, \code{pvalue} (the block posterior probability p_j of
+#'   Eqs. (21)/(23)), \code{adjp_holm/bonf/bh} (adjusted posterior probabilities),
+#'   \code{c_block}, \code{c_calib} (the charting constants), and
 #'   \code{raw/holm/bonf/bh/calib} over the r blocks — plus \code{$overall_ui(_p)}
 #'   and \code{$overall_t2(_p)}. \code{detected_blocks} carries the significance flags
 #'   for all four charts (\code{significant_*}, \code{significant_wald_*},
@@ -786,7 +789,7 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
           (g[, qi[5]] - g[, qi[4]]) + (g[, qi[2]] - g[, qi[1]]))       # K : tail excess (gamma_5-gamma_4+gamma_2-gamma_1)
       }
       qss_res <- .bqq_block_tests(cvc, 4L, r, alpha, do_qss_ui, do_qss_t2,
-                                  c("L", "S", "Sk", "K"))
+                                  c("LS", "ScS", "SkS", "KS"))
     }
   }
 

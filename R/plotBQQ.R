@@ -56,7 +56,7 @@
 # Significant blocks + their onset/localized observations from a
 # detectChangepoints_gamma() result (block significant if any quantile cell is
 # Holm-significant, matching the worked demo).
-# Significant blocks + their onsets and localized change points, resolved from the
+# Significant blocks + their onsets and localized change-points, resolved from the
 # family/statistic/adjustment actually recorded in `detection`. Reading a hardcoded
 # member (as this once did) silently returns nothing whenever the caller ran a basis
 # other than "quantile", which is why a QSS-only detection drew no lines at all.
@@ -91,7 +91,7 @@
 #' Plot the data process with fitted quantile bands over time
 #'
 #' Graph type 1: the observations with the five fitted quantile bands, and
-#' (optionally) crimson onset lines and within-block localized change points
+#' (optionally) crimson onset lines and within-block localized change-points
 #' from a \code{detectChangepoints_gamma()} result.
 #'
 #' @param fit A MAP fit from \code{getModel()}.
@@ -101,11 +101,11 @@
 #' @param detection Optional \code{detectChangepoints_gamma()} result. Its recorded
 #'   \code{basis} and \code{statistic} select which block test flags the blocks, and
 #'   its \code{detected_blocks} supplies the block onset (vertical line) and the
-#'   localized change point \code{signal_obs} (circled point on the series), the
+#'   localized change-point \code{signal_obs} (circled point on the series), the
 #'   latter obtained under whichever \code{signal_position} was passed to
 #'   \code{detectChangepoints_gamma()}.
 #' @param show_onset,show_located Logical display toggles (default TRUE): draw
-#'   the block-onset marks and the localized change points recorded in
+#'   the block-onset marks and the localized change-points recorded in
 #'   \code{detection}. They only hide layers; the decisions themselves are
 #'   made (and recorded) by \code{detectChangepoints_gamma()}.
 #' @param title Optional plot title.
@@ -175,10 +175,10 @@ plotQuantileProcess <- function(fit, time = NULL, center = 0, scale = 1,
 #' @param detection Optional \code{detectChangepoints_gamma()} result. Its recorded
 #'   \code{basis} and \code{statistic} select which block test flags the blocks, and
 #'   its \code{detected_blocks} supplies both the block onset (dashed line) and the
-#'   localized change point \code{signal_obs} (solid line), the latter obtained under
+#'   localized change-point \code{signal_obs} (solid line), the latter obtained under
 #'   whichever \code{signal_position} was passed to \code{detectChangepoints_gamma()}.
 #' @param show_onset,show_located Logical display toggles (default TRUE): draw
-#'   the block-onset marks and the localized change points recorded in
+#'   the block-onset marks and the localized change-points recorded in
 #'   \code{detection}. They only hide layers; the decisions themselves are
 #'   made (and recorded) by \code{detectChangepoints_gamma()}.
 #' @param seed Optional seed for \code{getEta()}.
@@ -220,7 +220,7 @@ plotQSSProcess <- function(fit, eta = NULL, H = NULL, X = NULL, time = NULL,
     if (isTRUE(show_onset) && length(ob) > 0)
       p <- p + ggplot2::geom_vline(xintercept = time[ob], color = pal$crimson,
                                    linetype = "dashed", linewidth = 0.35, alpha = 0.55)
-    # localized change point within each OOC block (Eq. 27): solid, so it is
+    # localized change-point within each OOC block (Eq. 27): solid, so it is
     # distinguishable from the dashed block onset.
     lp <- loc$located[!is.na(loc$located) & loc$located >= 1 & loc$located <= n]
     if (isTRUE(show_located) && length(lp) > 0)
@@ -258,14 +258,14 @@ plotQSSProcess <- function(fit, eta = NULL, H = NULL, X = NULL, time = NULL,
 #'   are bordered. Older results without those fields fall back to a quantile panel
 #'   (Holm-bordered), plus a QSS panel if \code{z_qss} is present.
 #' @param show_onset,show_located Logical display toggles (default TRUE): draw
-#'   the block-onset marks and the localized change points recorded in
+#'   the block-onset marks and the localized change-points recorded in
 #'   \code{detection}. They only hide layers; the decisions themselves are
 #'   made (and recorded) by \code{detectChangepoints_gamma()}.
 #' @param block_labels Optional labels for the block (x) axis (default block index).
 #'   Must be unique (they become factor levels).
 #' @param title Optional plot title.
 #' @param mark_cells Logical; when \code{TRUE} (default) the cells responsible for a
-#'   flagged block are given a second, darker border. A block that the block-level
+#'   OOC block are given a second, darker border. A block that the block-level
 #'   rule flags is bordered in \code{block_color}; inside it, each cell whose
 #'   cell-level posterior probability
 #'   \eqn{p_{q,j} = 1 - P(\chi^2_1 \le \tilde z^2_{q,j})} falls below \code{alpha}
@@ -273,8 +273,8 @@ plotQSSProcess <- function(fit, eta = NULL, H = NULL, X = NULL, time = NULL,
 #'   Section 3.2: it runs only inside blocks that have already signaled, so it
 #'   localizes a detected shift rather than adding a new family of tests, and the
 #'   false alarm probability remains that of the block-level rule.
-#' @param block_color Border colour for cells of a flagged block (default grey).
-#' @param cell_color Border colour for the localized cells within a flagged block
+#' @param block_color Border colour for cells of a OOC block (default grey).
+#' @param cell_color Border colour for the localized cells within a OOC block
 #'   (default black).
 #' @param xlab Label for the x axis (default \code{"block"}).
 #' @param ylab Label for the y axis. Default \code{NULL} (no label), since the rows
@@ -317,7 +317,7 @@ plotGammaHeatmap <- function(fit, detection = NULL, block_labels = NULL,
   stat_name <- if (use_t2) "hotelling_t2" else "ui"
   adjust <- if (!is.null(detection) && !is.null(detection$adjust)) detection$adjust else "calib"
 
-  ## ---- flagged blocks under the recorded rule; older detection objects fall
+  ## ---- OOC blocks under the recorded rule; older detection objects fall
   ## back to the flat calibrated aliases (calib only). ----
   get_sig <- function(fam) {
     if (is.null(detection)) return(integer(0))
@@ -338,7 +338,7 @@ plotGammaHeatmap <- function(fit, detection = NULL, block_labels = NULL,
   }
   outline_lab <- paste0("  (", if (use_t2) "T2" else "UI", "/", adjust, ")")
 
-  ## ---- within-block localization (manuscript Sec 3.2): a flagged block is
+  ## ---- within-block localization (manuscript Sec 3.2): a OOC block is
   ## bordered in block_color; inside it, a cell is bordered in cell_color when
   ## its whitened statistic exceeds the SAME charting constant that flagged the
   ## block -- Eqs. (21)/(23) for the raw rule, (22)/(24) for the calibrated
@@ -419,7 +419,7 @@ plotGammaHeatmap <- function(fit, detection = NULL, block_labels = NULL,
       vals <- detection$z_qss
       flab <- "z"; sub <- "QSS: studentized shape contrasts (whitened cells unavailable)"
     }
-    rl <- rownames(vals); if (is.null(rl)) rl <- c("L", "S", "Sk", "K")
+    rl <- rownames(vals); if (is.null(rl)) rl <- c("LS", "ScS", "SkS", "KS")
     sub <- paste0(sub, outline_lab)
     sc <- get_sig("qss")
     panels$qss <- heat(vals, rl, sc, get_sig_cells("qss", sc, nrow(vals)),

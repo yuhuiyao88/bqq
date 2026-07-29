@@ -39,7 +39,7 @@ computed internally if not supplied.}
 \item{detection}{Optional \code{detectChangepoints_gamma()} result. Its recorded
 \code{basis} and \code{statistic} select which block test flags the blocks, and
 its \code{detected_blocks} supplies both the block onset (dashed line) and the
-localized change point \code{signal_obs} (solid line), the latter obtained under
+localized change-point \code{signal_obs} (solid line), the latter obtained under
 whichever \code{signal_position} was passed to \code{detectChangepoints_gamma()}.}
 
 \item{seed}{Optional seed for \code{getEta()}.}
@@ -53,7 +53,7 @@ the four panels are already named by their facet strips and each has its own
 free scale.}
 
 \item{show_onset, show_located}{Logical display toggles (default TRUE): draw
-the block-onset marks and the localized change points recorded in
+the block-onset marks and the localized change-points recorded in
 \code{detection}. They only hide layers; the decisions themselves are
 made (and recorded) by \code{detectChangepoints_gamma()}.}
 }
