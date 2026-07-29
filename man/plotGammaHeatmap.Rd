@@ -11,7 +11,11 @@ plotGammaHeatmap(
   title = NULL,
   sig_block = NULL,
   basis = NULL,
-  adjust = c("calib", "raw", "holm", "bonf", "bh")
+  adjust = c("calib", "raw", "holm", "bonf", "bh"),
+  mark_cells = TRUE,
+  alpha = NULL,
+  block_color = NULL,
+  cell_color = "black"
 )
 }
 \arguments{
@@ -29,7 +33,7 @@ Must be unique (they become factor levels).}
 
 \item{sig_block}{Optional length-\code{r} logical vector of significant blocks.
 When supplied it takes precedence for the quantile panel: every cell in a
-significant block gets the black border, so flagged blocks read as whole
+significant block gets the grey border, so flagged blocks read as whole
 bordered columns. Default \code{NULL} keeps the detection-driven behavior.}
 
 \item{basis}{Optional character vector (\code{"quantile"}, \code{"qss"}) to force
@@ -43,6 +47,24 @@ single-step charting-constant rule), \code{"raw"}, \code{"holm"},
 and display convention are all inherited from \code{detection}: the fill is
 the studentized z when the recorded statistic is \code{"ui"}, and the
 whitened \eqn{\tilde z^2} Hotelling cells when it is \code{"hotelling_t2"}.}
+
+\item{mark_cells}{Logical; when \code{TRUE} (default) the cells responsible for a
+flagged block are given a second, darker border. A block that the block-level
+rule flags is bordered in \code{block_color}; inside it, each cell whose
+cell-level posterior probability
+\eqn{p_{q,j} = 1 - P(\chi^2_1 \le \tilde z^2_{q,j})} falls below \code{alpha}
+is bordered in \code{cell_color}. This is the within-block localization step of
+Section 3.2: it runs only inside blocks that have already signaled, so it
+localizes a detected shift rather than adding a new family of tests, and the
+false alarm probability remains that of the block-level rule.}
+
+\item{alpha}{Significance level for the cell-level localization. Default
+\code{NULL} inherits \code{detection$alpha}, falling back to 0.05.}
+
+\item{block_color}{Border colour for cells of a flagged block (default grey).}
+
+\item{cell_color}{Border colour for the localized cells within a flagged block
+(default black).}
 }
 \value{
 A ggplot object when one family is shown; a \pkg{patchwork} of two panels

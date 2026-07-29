@@ -206,16 +206,32 @@ plotQSSProcess <- function(fit, eta = NULL, H = NULL, X = NULL, time = NULL, tau
 #' @param title Optional plot title.
 #' @param sig_block Optional length-\code{r} logical vector of significant blocks.
 #'   When supplied it takes precedence for the quantile panel: every cell in a
-#'   significant block gets the black border, so flagged blocks read as whole
+#'   significant block gets the grey border, so flagged blocks read as whole
 #'   bordered columns. Default \code{NULL} keeps the detection-driven behavior.
 #' @param basis Optional character vector (\code{"quantile"}, \code{"qss"}) to force
 #'   which panel(s) to draw, overriding the auto-detection from \code{detection}.
+#' @param mark_cells Logical; when \code{TRUE} (default) the cells responsible for a
+#'   flagged block are given a second, darker border. A block that the block-level
+#'   rule flags is bordered in \code{block_color}; inside it, each cell whose
+#'   cell-level posterior probability
+#'   \eqn{p_{q,j} = 1 - P(\chi^2_1 \le \tilde z^2_{q,j})} falls below \code{alpha}
+#'   is bordered in \code{cell_color}. This is the within-block localization step of
+#'   Section 3.2: it runs only inside blocks that have already signaled, so it
+#'   localizes a detected shift rather than adding a new family of tests, and the
+#'   false alarm probability remains that of the block-level rule.
+#' @param alpha Significance level for the cell-level localization. Default
+#'   \code{NULL} inherits \code{detection$alpha}, falling back to 0.05.
+#' @param block_color Border colour for cells of a flagged block (default grey).
+#' @param cell_color Border colour for the localized cells within a flagged block
+#'   (default black).
 #' @return A ggplot object when one family is shown; a \pkg{patchwork} of two panels
 #'   when both are shown (or a named list of ggplots if \pkg{patchwork} is absent).
 #' @export
 plotGammaHeatmap <- function(fit, detection = NULL, block_labels = NULL,
                              title = NULL, sig_block = NULL, basis = NULL,
-                             adjust = c("calib", "raw", "holm", "bonf", "bh")) {
+                             adjust = c("calib", "raw", "holm", "bonf", "bh"),
+                             mark_cells = TRUE, alpha = NULL,
+                             block_color = NULL, cell_color = "black") {
   adjust <- match.arg(adjust)
   .bqq_need_ggplot2()
   pal <- .bqq_pal
@@ -266,18 +282,50 @@ plotGammaHeatmap <- function(fit, detection = NULL, block_labels = NULL,
       if (use_t2) detection$significant_wald_calib else detection$significant_calib
     }
   }
-  outline_lab <- paste0("  (outlined: ", if (use_t2) "T2" else "UI", "/", adjust, ")")
+  outline_lab <- paste0("  (block: ", if (use_t2) "T2" else "UI", "/", adjust,
+                        if (isTRUE(mark_cells)) "; cell: chi-square_1" else "", ")")
 
-  ## ---- single-panel builder; sig_cols = significant blocks (whole-column border) ----
-  heat <- function(vals, rowlab, sig_cols, fill_lab, subtitle, diverging) {
+  ## ---- within-block localization (Section 3.2, Eq. 25) ----
+  ## A block flagged by the block-level rule is bordered in block_color. Inside it,
+  ## a cell is bordered in cell_color when its cell-level posterior probability
+  ##   p_{q,j} = 1 - P(chi-square_1 <= z~^2_{q,j})
+  ## falls below alpha. Restricting the search to already-flagged blocks is what
+  ## keeps this a localization step rather than a new family of tests, so the
+  ## false alarm probability stays that of the block-level rule.
+  blk_col <- if (!is.null(block_color)) block_color else pal$gray
+  a_cell <- if (!is.null(alpha)) alpha
+            else if (!is.null(detection) && !is.null(detection$alpha)) detection$alpha
+            else 0.05
+  get_sig_cells <- function(fam, sig_cols, nr) {
+    out <- matrix(FALSE, nr, r)
+    if (!isTRUE(mark_cells) || is.null(detection) || length(sig_cols) == 0) return(out)
+    cs <- if (fam == "qss") detection$cellstat_qss else detection$cellstat
+    if (is.null(cs) || !is.matrix(cs) || nrow(cs) != nr || ncol(cs) != r) {
+      warning("cell-level statistics are unavailable for the '", fam,
+              "' family; blocks are bordered but cells are not localized.",
+              call. = FALSE)
+      return(out)
+    }
+    p <- stats::pchisq(cs, df = 1, lower.tail = FALSE)
+    out[, sig_cols] <- p[, sig_cols, drop = FALSE] < a_cell
+    out
+  }
+
+  ## ---- single-panel builder; sig_cols = significant blocks (whole-column border),
+  ## sig_cells = logical ncell x r matrix of localized cells within those blocks ----
+  heat <- function(vals, rowlab, sig_cols, sig_cells, fill_lab, subtitle, diverging) {
     d <- expand.grid(ri = seq_len(nrow(vals)), bj = seq_len(r))
     d$val   <- vals[cbind(d$ri, d$bj)]
     d$sig   <- d$bj %in% sig_cols
+    d$cell  <- sig_cells[cbind(d$ri, d$bj)]
     d$row   <- factor(rowlab[d$ri], levels = rowlab)
     d$block <- factor(blk[d$bj], levels = blk)
     g <- ggplot2::ggplot(d, ggplot2::aes(x = block, y = row)) +
       ggplot2::geom_tile(ggplot2::aes(fill = val)) +
-      ggplot2::geom_tile(data = d[d$sig, , drop = FALSE], fill = NA, color = "black", linewidth = 0.6)
+      ggplot2::geom_tile(data = d[d$sig, , drop = FALSE], fill = NA,
+                         color = blk_col, linewidth = 0.6) +
+      ggplot2::geom_tile(data = d[d$cell, , drop = FALSE], fill = NA,
+                         color = cell_color, linewidth = 1.0)
     if (diverging) {
       lim <- max(abs(vals), na.rm = TRUE); if (!is.finite(lim) || lim == 0) lim <- 1
       g <- g + ggplot2::scale_fill_gradient2(low = pal$steel, mid = "white", high = pal$crimson,
@@ -302,7 +350,9 @@ plotGammaHeatmap <- function(fit, detection = NULL, block_labels = NULL,
       flab <- expression(gamma); sub <- "quantile: block-shift gamma"
     }
     if (!is.null(detection)) sub <- paste0(sub, outline_lab)
-    panels$quantile <- heat(vals, rl, get_sig("quantile"), flab, sub, diverging = !whiten)
+    sc <- get_sig("quantile")
+    panels$quantile <- heat(vals, rl, sc, get_sig_cells("quantile", sc, nrow(vals)),
+                            flab, sub, diverging = !whiten)
   }
 
   ## ---- QSS panel ----
@@ -312,7 +362,9 @@ plotGammaHeatmap <- function(fit, detection = NULL, block_labels = NULL,
     flab <- if (whiten) expression(tilde(z)^2) else "z"
     sub  <- if (whiten) "QSS: whitened z² (Hotelling cells)" else "QSS: studentized shape contrasts"
     sub <- paste0(sub, outline_lab)
-    panels$qss <- heat(vals, rl, get_sig("qss"), flab, sub, diverging = !whiten)
+    sc <- get_sig("qss")
+    panels$qss <- heat(vals, rl, sc, get_sig_cells("qss", sc, nrow(vals)),
+                       flab, sub, diverging = !whiten)
   }
 
   ## ---- return one panel, or stack both ----
