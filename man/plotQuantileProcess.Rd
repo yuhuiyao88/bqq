@@ -14,6 +14,8 @@ plotQuantileProcess(
   alpha = 0.05,
   y = NULL,
   title = NULL,
+  xlab = "time",
+  ylab = "value",
   adjust = c("calib", "raw", "holm", "bonf", "bh"),
   basis = NULL
 )
@@ -42,6 +44,13 @@ own \code{alpha}, so this argument does not affect the result.}
 \item{y}{Optional observed series override (default \code{fit$y}).}
 
 \item{title}{Optional plot title.}
+
+\item{xlab}{Label for the x axis (default \code{"time"}).}
+
+\item{ylab}{Label for the y axis (default \code{"value"}). Set it to name the
+series actually plotted, e.g. \code{"residual"} when the model was fitted to
+regression residuals, or \code{"difference"} when it was fitted to their
+first-order differences. Use \code{NULL} to drop the label.}
 
 \item{adjust}{Which across-block adjustment family flags the blocks:
 \code{"calib"} (default), \code{"raw"}, \code{"holm"}, \code{"bonf"}, or

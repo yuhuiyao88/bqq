@@ -17,7 +17,9 @@ plotGammaHeatmap(
   block_color = NULL,
   cell_color = "black",
   pos_color = NULL,
-  neg_color = NULL
+  neg_color = NULL,
+  xlab = "block",
+  ylab = NULL
 )
 }
 \arguments{
@@ -77,6 +79,13 @@ false alarm probability remains that of the block-level rule.}
 \eqn{\tilde z} and negative \eqn{\tilde z} respectively, white at zero.
 Defaults are a muted, lightness-matched Morandi-style red and blue. There is
 no canonical hex for those, so pass your own values to match a house palette.}
+
+\item{xlab}{Label for the x axis (default \code{"block"}).}
+
+\item{ylab}{Label for the y axis. Default \code{NULL} (no label), since the rows
+are already named by the quantile levels or the QSS contrasts. When both panels
+are stacked, \code{xlab}/\code{ylab} apply to each panel; \code{title} is
+applied once to the combined figure.}
 }
 \value{
 A ggplot object when one family is shown; a \pkg{patchwork} of two panels

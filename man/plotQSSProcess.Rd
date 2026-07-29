@@ -18,6 +18,8 @@ plotQSSProcess(
   alpha = 0.05,
   seed = NULL,
   title = NULL,
+  xlab = "time",
+  ylab = NULL,
   adjust = c("calib", "raw", "holm", "bonf", "bh"),
   basis = NULL
 )
@@ -51,6 +53,12 @@ own \code{alpha}, so this argument does not affect the result.}
 \item{seed}{Optional seed for \code{getEta()}.}
 
 \item{title}{Optional plot title.}
+
+\item{xlab}{Label for the x axis (default \code{"time"}).}
+
+\item{ylab}{Label for the shared y axis. Default \code{NULL} (no label), since
+the four panels are already named by their facet strips and each has its own
+free scale.}
 
 \item{adjust}{Which across-block adjustment family flags the blocks:
 \code{"calib"} (default), \code{"raw"}, \code{"holm"}, \code{"bonf"}, or

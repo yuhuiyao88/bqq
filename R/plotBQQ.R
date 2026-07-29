@@ -110,6 +110,11 @@
 #'   own \code{alpha}, so this argument does not affect the result.
 #' @param y Optional observed series override (default \code{fit$y}).
 #' @param title Optional plot title.
+#' @param xlab Label for the x axis (default \code{"time"}).
+#' @param ylab Label for the y axis (default \code{"value"}). Set it to name the
+#'   series actually plotted, e.g. \code{"residual"} when the model was fitted to
+#'   regression residuals, or \code{"difference"} when it was fitted to their
+#'   first-order differences. Use \code{NULL} to drop the label.
 #' @param adjust Which across-block adjustment family flags the blocks:
 #'   \code{"calib"} (default), \code{"raw"}, \code{"holm"}, \code{"bonf"}, or
 #'   \code{"bh"}. Matches the \code{adjust} argument of \code{plotGammaHeatmap()}.
@@ -119,6 +124,7 @@
 #' @export
 plotQuantileProcess <- function(fit, time = NULL, taus = NULL, center = 0, scale = 1,
                                 detection = NULL, alpha = 0.05, y = NULL, title = NULL,
+                                xlab = "time", ylab = "value",
                                 adjust = c("calib", "raw", "holm", "bonf", "bh"),
                                 basis = NULL) {
   adjust <- match.arg(adjust)
@@ -154,7 +160,7 @@ plotQuantileProcess <- function(fit, time = NULL, taus = NULL, center = 0, scale
       }
     }
   }
-  p + ggplot2::labs(x = "time", y = "value", title = title) + .bqq_theme()
+  p + ggplot2::labs(x = xlab, y = ylab, title = title) + .bqq_theme()
 }
 
 
@@ -183,6 +189,10 @@ plotQuantileProcess <- function(fit, time = NULL, taus = NULL, center = 0, scale
 #'   own \code{alpha}, so this argument does not affect the result.
 #' @param seed Optional seed for \code{getEta()}.
 #' @param title Optional plot title.
+#' @param xlab Label for the x axis (default \code{"time"}).
+#' @param ylab Label for the shared y axis. Default \code{NULL} (no label), since
+#'   the four panels are already named by their facet strips and each has its own
+#'   free scale.
 #' @param adjust Which across-block adjustment family flags the blocks:
 #'   \code{"calib"} (default), \code{"raw"}, \code{"holm"}, \code{"bonf"}, or
 #'   \code{"bh"}. Matches the \code{adjust} argument of \code{plotGammaHeatmap()}.
@@ -193,6 +203,7 @@ plotQuantileProcess <- function(fit, time = NULL, taus = NULL, center = 0, scale
 plotQSSProcess <- function(fit, eta = NULL, H = NULL, X = NULL, time = NULL, taus = NULL,
                            center = 0, scale = 1, level = 0.95, detection = NULL,
                            alpha = 0.05, seed = NULL, title = NULL,
+                           xlab = "time", ylab = NULL,
                            adjust = c("calib", "raw", "holm", "bonf", "bh"),
                            basis = NULL) {
   adjust <- match.arg(adjust)
@@ -234,7 +245,7 @@ plotQSSProcess <- function(fit, eta = NULL, H = NULL, X = NULL, time = NULL, tau
     ggplot2::scale_fill_manual(values = cols, guide = "none") +
     ggplot2::scale_color_manual(values = cols, guide = "none") +
     ggplot2::facet_wrap(~stat, ncol = 1, scales = "free_y", strip.position = "left") +
-    ggplot2::labs(x = "time", y = NULL, title = title) + .bqq_theme() +
+    ggplot2::labs(x = xlab, y = ylab, title = title) + .bqq_theme() +
     ggplot2::theme(
       panel.border = ggplot2::element_rect(color = "grey55", fill = NA, linewidth = 0.5),
       panel.spacing.y = ggplot2::unit(0.6, "lines"))
@@ -294,6 +305,11 @@ plotQSSProcess <- function(fit, eta = NULL, H = NULL, X = NULL, time = NULL, tau
 #' @param block_color Border colour for cells of a flagged block (default grey).
 #' @param cell_color Border colour for the localized cells within a flagged block
 #'   (default black).
+#' @param xlab Label for the x axis (default \code{"block"}).
+#' @param ylab Label for the y axis. Default \code{NULL} (no label), since the rows
+#'   are already named by the quantile levels or the QSS contrasts. When both panels
+#'   are stacked, \code{xlab}/\code{ylab} apply to each panel; \code{title} is
+#'   applied once to the combined figure.
 #' @param pos_color,neg_color End colours of the diverging fill: positive
 #'   \eqn{\tilde z} and negative \eqn{\tilde z} respectively, white at zero.
 #'   Defaults are a muted, lightness-matched Morandi-style red and blue. There is
@@ -306,7 +322,8 @@ plotGammaHeatmap <- function(fit, detection = NULL, block_labels = NULL,
                              adjust = c("calib", "raw", "holm", "bonf", "bh"),
                              mark_cells = TRUE, alpha = NULL,
                              block_color = NULL, cell_color = "black",
-                             pos_color = NULL, neg_color = NULL) {
+                             pos_color = NULL, neg_color = NULL,
+                             xlab = "block", ylab = NULL) {
   adjust <- match.arg(adjust)
   .bqq_need_ggplot2()
   pal <- .bqq_pal
@@ -410,7 +427,7 @@ plotGammaHeatmap <- function(fit, detection = NULL, block_labels = NULL,
     } else {
       g <- g + ggplot2::scale_fill_gradient(low = "white", high = pal$crimson)
     }
-    g + ggplot2::labs(x = "block", y = NULL, fill = fill_lab, subtitle = subtitle) + .bqq_theme()
+    g + ggplot2::labs(x = xlab, y = ylab, fill = fill_lab, subtitle = subtitle) + .bqq_theme()
   }
 
   panels <- list()
