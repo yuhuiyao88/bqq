@@ -17,7 +17,9 @@ plotQSSProcess(
   detection = NULL,
   alpha = 0.05,
   seed = NULL,
-  title = NULL
+  title = NULL,
+  adjust = c("calib", "raw", "holm", "bonf", "bh"),
+  basis = NULL
 )
 }
 \arguments{
@@ -36,13 +38,26 @@ computed internally if not supplied.}
 
 \item{level}{Credible-band level (default 0.95).}
 
-\item{detection}{Optional \code{detectChangepoints_gamma()} result; adds onset lines.}
+\item{detection}{Optional \code{detectChangepoints_gamma()} result. Its recorded
+\code{basis} and \code{statistic} select which block test flags the blocks, and
+its \code{detected_blocks} supplies both the block onset (dashed line) and the
+localized change point \code{signal_obs} (solid line), the latter obtained under
+whichever \code{signal_position} was passed to \code{detectChangepoints_gamma()}.}
 
-\item{alpha}{Significance level for the block decision (default 0.05).}
+\item{alpha}{Retained for backward compatibility; block selection uses the
+adjustment families already computed by \code{detectChangepoints_gamma()} at its
+own \code{alpha}, so this argument does not affect the result.}
 
 \item{seed}{Optional seed for \code{getEta()}.}
 
 \item{title}{Optional plot title.}
+
+\item{adjust}{Which across-block adjustment family flags the blocks:
+\code{"calib"} (default), \code{"raw"}, \code{"holm"}, \code{"bonf"}, or
+\code{"bh"}. Matches the \code{adjust} argument of \code{plotGammaHeatmap()}.}
+
+\item{basis}{Optional \code{"quantile"} or \code{"qss"} override; by default the
+basis recorded in \code{detection} is used (quantile if both were run).}
 }
 \value{
 A ggplot object (four stacked, free-y facets).

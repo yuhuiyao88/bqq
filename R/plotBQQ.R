@@ -10,7 +10,12 @@
 
 # UA / crimson palette shared across the three graphs
 .bqq_pal <- list(ink = "#2A2123", steel = "#5B666D", crimson = "#9E1B32",
-                 brick = "#76232F", rose = "#C46A78", gray = "#9AA5B1")
+                 brick = "#76232F", rose = "#C46A78", gray = "#9AA5B1",
+                 # Muted, low-chroma Morandi-style diverging pair for the heatmap:
+                 # positive shifts read red, negative shifts read blue. There is no
+                 # canonical hex for "Morandi red/blue"; these are representative
+                 # tones, matched in lightness, and overridable per call.
+                 morandi_red = "#AD6A6C", morandi_blue = "#6E8CA0")
 
 .bqq_need_ggplot2 <- function() {
   if (!requireNamespace("ggplot2", quietly = TRUE)) {
@@ -51,9 +56,34 @@
 # Significant blocks + their onset/localized observations from a
 # detectChangepoints_gamma() result (block significant if any quantile cell is
 # Holm-significant, matching the worked demo).
-.bqq_sig_blocks <- function(detection, alpha) {
+# Significant blocks + their onsets and localized change points, resolved from the
+# family/statistic/adjustment actually recorded in `detection`. Reading a hardcoded
+# member (as this once did) silently returns nothing whenever the caller ran a basis
+# other than "quantile", which is why a QSS-only detection drew no lines at all.
+.bqq_sig_blocks <- function(detection, alpha = NULL, adjust = "calib", basis = NULL) {
+  empty <- list(blocks = integer(0), onset = numeric(0), located = numeric(0))
   db <- detection$detected_blocks
-  sb <- if (length(detection$significant_holm)) detection$significant_holm else which(db$significant_holm)
+  if (is.null(db)) return(empty)
+
+  fam <- if (!is.null(basis)) basis
+         else if (!is.null(detection$basis)) detection$basis else "quantile"
+  fam <- if ("quantile" %in% fam) "quantile" else "qss"   # quantile wins if both were run
+  stat <- if (!is.null(detection$statistic)) detection$statistic else "ui"
+  stat_name <- if (("hotelling_t2" %in% stat) && !("ui" %in% stat)) "hotelling_t2" else "ui"
+
+  sb <- detection$tests[[fam]][[stat_name]][[adjust]]
+  if (is.null(sb)) {                                      # older detection objects
+    nm <- if (fam == "qss") {
+      if (stat_name == "hotelling_t2") paste0("significant_qss_t2_", adjust)
+      else                             paste0("significant_qss_", adjust)
+    } else {
+      if (stat_name == "hotelling_t2") paste0("significant_wald_", adjust)
+      else                             paste0("significant_", adjust)
+    }
+    sb <- detection[[nm]]
+    if (is.null(sb) && !is.null(db[[nm]])) sb <- which(db[[nm]])
+  }
+  if (is.null(sb) || length(sb) == 0) return(empty)
   list(blocks = sb, onset = db$obs_start[sb], located = db$signal_obs[sb])
 }
 
@@ -69,15 +99,29 @@
 #' @param taus Quantile levels (default recovered from \code{fit}).
 #' @param center,scale Map the fit-scale quantiles/data back to the display scale
 #'   as \code{value * scale + center} (e.g. the standardization used before fitting).
-#' @param detection Optional \code{detectChangepoints_gamma()} result; adds onset
-#'   lines and localized-change-point markers.
-#' @param alpha Significance level for the block decision (default 0.05).
+#' @param detection Optional \code{detectChangepoints_gamma()} result. Its recorded
+#'   \code{basis} and \code{statistic} select which block test flags the blocks, and
+#'   its \code{detected_blocks} supplies the block onset (vertical line) and the
+#'   localized change point \code{signal_obs} (circled point on the series), the
+#'   latter obtained under whichever \code{signal_position} was passed to
+#'   \code{detectChangepoints_gamma()}.
+#' @param alpha Retained for backward compatibility; block selection uses the
+#'   adjustment families already computed by \code{detectChangepoints_gamma()} at its
+#'   own \code{alpha}, so this argument does not affect the result.
 #' @param y Optional observed series override (default \code{fit$y}).
 #' @param title Optional plot title.
+#' @param adjust Which across-block adjustment family flags the blocks:
+#'   \code{"calib"} (default), \code{"raw"}, \code{"holm"}, \code{"bonf"}, or
+#'   \code{"bh"}. Matches the \code{adjust} argument of \code{plotGammaHeatmap()}.
+#' @param basis Optional \code{"quantile"} or \code{"qss"} override; by default the
+#'   basis recorded in \code{detection} is used (quantile if both were run).
 #' @return A ggplot object.
 #' @export
 plotQuantileProcess <- function(fit, time = NULL, taus = NULL, center = 0, scale = 1,
-                                detection = NULL, alpha = 0.05, y = NULL, title = NULL) {
+                                detection = NULL, alpha = 0.05, y = NULL, title = NULL,
+                                adjust = c("calib", "raw", "holm", "bonf", "bh"),
+                                basis = NULL) {
+  adjust <- match.arg(adjust)
   .bqq_need_ggplot2()
   pal <- .bqq_pal
   taus <- .bqq_taus(fit, taus); m <- length(taus)
@@ -97,11 +141,11 @@ plotQuantileProcess <- function(fit, time = NULL, taus = NULL, center = 0, scale
     ggplot2::geom_line(ggplot2::aes(y = q3), color = pal$steel, linewidth = 0.5) +
     ggplot2::geom_line(ggplot2::aes(y = med), color = pal$ink, linewidth = 0.9)
   if (!is.null(detection)) {
-    loc <- .bqq_sig_blocks(detection, alpha)
+    loc <- .bqq_sig_blocks(detection, alpha, adjust = adjust, basis = basis)
     if (length(loc$onset) > 0) {
       p <- p + ggplot2::geom_vline(xintercept = time[loc$onset], color = pal$crimson,
                                    linewidth = 0.6, alpha = 0.85)
-      lp <- loc$located[loc$located >= 1 & loc$located <= n]
+      lp <- loc$located[!is.na(loc$located) & loc$located >= 1 & loc$located <= n]
       if (length(lp) > 0) {
         p <- p + ggplot2::geom_point(
           data = data.frame(x = time[lp], y = yv[lp]),
@@ -129,15 +173,29 @@ plotQuantileProcess <- function(fit, time = NULL, taus = NULL, center = 0, scale
 #' @param taus Quantile levels (default recovered from \code{fit}).
 #' @param center,scale Map the fit-scale quantiles to the display scale.
 #' @param level Credible-band level (default 0.95).
-#' @param detection Optional \code{detectChangepoints_gamma()} result; adds onset lines.
-#' @param alpha Significance level for the block decision (default 0.05).
+#' @param detection Optional \code{detectChangepoints_gamma()} result. Its recorded
+#'   \code{basis} and \code{statistic} select which block test flags the blocks, and
+#'   its \code{detected_blocks} supplies both the block onset (dashed line) and the
+#'   localized change point \code{signal_obs} (solid line), the latter obtained under
+#'   whichever \code{signal_position} was passed to \code{detectChangepoints_gamma()}.
+#' @param alpha Retained for backward compatibility; block selection uses the
+#'   adjustment families already computed by \code{detectChangepoints_gamma()} at its
+#'   own \code{alpha}, so this argument does not affect the result.
 #' @param seed Optional seed for \code{getEta()}.
 #' @param title Optional plot title.
+#' @param adjust Which across-block adjustment family flags the blocks:
+#'   \code{"calib"} (default), \code{"raw"}, \code{"holm"}, \code{"bonf"}, or
+#'   \code{"bh"}. Matches the \code{adjust} argument of \code{plotGammaHeatmap()}.
+#' @param basis Optional \code{"quantile"} or \code{"qss"} override; by default the
+#'   basis recorded in \code{detection} is used (quantile if both were run).
 #' @return A ggplot object (four stacked, free-y facets).
 #' @export
 plotQSSProcess <- function(fit, eta = NULL, H = NULL, X = NULL, time = NULL, taus = NULL,
                            center = 0, scale = 1, level = 0.95, detection = NULL,
-                           alpha = 0.05, seed = NULL, title = NULL) {
+                           alpha = 0.05, seed = NULL, title = NULL,
+                           adjust = c("calib", "raw", "holm", "bonf", "bh"),
+                           basis = NULL) {
+  adjust <- match.arg(adjust)
   .bqq_need_ggplot2()
   pal <- .bqq_pal
   taus <- .bqq_taus(fit, taus)
@@ -158,10 +216,17 @@ plotQSSProcess <- function(fit, eta = NULL, H = NULL, X = NULL, time = NULL, tau
   cols <- c(Location = pal$ink, Scale = pal$crimson, Skewness = pal$rose, Kurtosis = pal$brick)
   p <- ggplot2::ggplot(df, ggplot2::aes(x = time))
   if (!is.null(detection)) {
-    loc <- .bqq_sig_blocks(detection, alpha)
-    if (length(loc$onset) > 0)
-      p <- p + ggplot2::geom_vline(xintercept = time[loc$onset], color = pal$crimson,
+    loc <- .bqq_sig_blocks(detection, alpha, adjust = adjust, basis = basis)
+    ob <- loc$onset[!is.na(loc$onset) & loc$onset >= 1 & loc$onset <= n]
+    if (length(ob) > 0)
+      p <- p + ggplot2::geom_vline(xintercept = time[ob], color = pal$crimson,
                                    linetype = "dashed", linewidth = 0.35, alpha = 0.55)
+    # localized change point within each flagged block (Eq. 27): solid, so it is
+    # distinguishable from the dashed block onset.
+    lp <- loc$located[!is.na(loc$located) & loc$located >= 1 & loc$located <= n]
+    if (length(lp) > 0)
+      p <- p + ggplot2::geom_vline(xintercept = time[lp], color = pal$crimson,
+                                   linewidth = 0.6, alpha = 0.9)
   }
   p +
     ggplot2::geom_ribbon(ggplot2::aes(ymin = lo, ymax = hi, fill = stat), alpha = 0.22) +
@@ -229,6 +294,10 @@ plotQSSProcess <- function(fit, eta = NULL, H = NULL, X = NULL, time = NULL, tau
 #' @param block_color Border colour for cells of a flagged block (default grey).
 #' @param cell_color Border colour for the localized cells within a flagged block
 #'   (default black).
+#' @param pos_color,neg_color End colours of the diverging fill: positive
+#'   \eqn{\tilde z} and negative \eqn{\tilde z} respectively, white at zero.
+#'   Defaults are a muted, lightness-matched Morandi-style red and blue. There is
+#'   no canonical hex for those, so pass your own values to match a house palette.
 #' @return A ggplot object when one family is shown; a \pkg{patchwork} of two panels
 #'   when both are shown (or a named list of ggplots if \pkg{patchwork} is absent).
 #' @export
@@ -236,7 +305,8 @@ plotGammaHeatmap <- function(fit, detection = NULL, block_labels = NULL,
                              title = NULL, sig_block = NULL, basis = NULL,
                              adjust = c("calib", "raw", "holm", "bonf", "bh"),
                              mark_cells = TRUE, alpha = NULL,
-                             block_color = NULL, cell_color = "black") {
+                             block_color = NULL, cell_color = "black",
+                             pos_color = NULL, neg_color = NULL) {
   adjust <- match.arg(adjust)
   .bqq_need_ggplot2()
   pal <- .bqq_pal
@@ -297,7 +367,9 @@ plotGammaHeatmap <- function(fit, detection = NULL, block_labels = NULL,
   ## falls below alpha. Restricting the search to already-flagged blocks is what
   ## keeps this a localization step rather than a new family of tests, so the
   ## false alarm probability stays that of the block-level rule.
-  blk_col <- if (!is.null(block_color)) block_color else pal$gray
+  blk_col   <- if (!is.null(block_color)) block_color else pal$gray
+  pos_color <- if (!is.null(pos_color))   pos_color   else pal$morandi_red
+  neg_color <- if (!is.null(neg_color))   neg_color   else pal$morandi_blue
   a_cell <- if (!is.null(alpha)) alpha
             else if (!is.null(detection) && !is.null(detection$alpha)) detection$alpha
             else 0.05
@@ -333,7 +405,7 @@ plotGammaHeatmap <- function(fit, detection = NULL, block_labels = NULL,
                          color = cell_color, linewidth = 1.0)
     if (diverging) {
       lim <- max(abs(vals), na.rm = TRUE); if (!is.finite(lim) || lim == 0) lim <- 1
-      g <- g + ggplot2::scale_fill_gradient2(low = pal$steel, mid = "white", high = pal$crimson,
+      g <- g + ggplot2::scale_fill_gradient2(low = neg_color, mid = "white", high = pos_color,
                                              midpoint = 0, limits = c(-lim, lim))
     } else {
       g <- g + ggplot2::scale_fill_gradient(low = "white", high = pal$crimson)

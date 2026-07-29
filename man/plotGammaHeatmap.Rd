@@ -15,7 +15,9 @@ plotGammaHeatmap(
   mark_cells = TRUE,
   alpha = NULL,
   block_color = NULL,
-  cell_color = "black"
+  cell_color = "black",
+  pos_color = NULL,
+  neg_color = NULL
 )
 }
 \arguments{
@@ -70,6 +72,11 @@ false alarm probability remains that of the block-level rule.}
 
 \item{cell_color}{Border colour for the localized cells within a flagged block
 (default black).}
+
+\item{pos_color, neg_color}{End colours of the diverging fill: positive
+\eqn{\tilde z} and negative \eqn{\tilde z} respectively, white at zero.
+Defaults are a muted, lightness-matched Morandi-style red and blue. There is
+no canonical hex for those, so pass your own values to match a house palette.}
 }
 \value{
 A ggplot object when one family is shown; a \pkg{patchwork} of two panels
