@@ -200,9 +200,14 @@ plotQSSProcess <- function(fit, eta = NULL, H = NULL, X = NULL, time = NULL, tau
 #'   single-step charting-constant rule), \code{"raw"}, \code{"holm"},
 #'   \code{"bonf"}, or \code{"bh"}, as computed by
 #'   \code{detectChangepoints_gamma()}. The quantile levels, significance level,
-#'   and display convention are all inherited from \code{detection}: the fill is
-#'   the studentized z when the recorded statistic is \code{"ui"}, and the
-#'   whitened \eqn{\tilde z^2} Hotelling cells when it is \code{"hotelling_t2"}.
+#'   and significance level are inherited from \code{detection}. The recorded
+#'   statistic selects the BLOCK test only: the display is identical for
+#'   \code{"ui"} and \code{"hotelling_t2"}. The fill is always the whitened
+#'   \eqn{\tilde z} on a diverging scale centred at zero, and the cell-level
+#'   statistic is always the whitened \eqn{\tilde z^2}; only which blocks are
+#'   bordered depends on the statistic. Detection objects predating the
+#'   whitened-cell fields fall back to the studentized z, which the panel
+#'   subtitle records.
 #' @param title Optional plot title.
 #' @param sig_block Optional length-\code{r} logical vector of significant blocks.
 #'   When supplied it takes precedence for the quantile panel: every cell in a
@@ -255,9 +260,9 @@ plotGammaHeatmap <- function(fit, detection = NULL, block_labels = NULL,
   stat <- if (!is.null(detection) && !is.null(detection$statistic)) detection$statistic else "ui"
   use_t2 <- ("hotelling_t2" %in% stat) && !("ui" %in% stat)   # UI wins if both requested
   stat_name <- if (use_t2) "hotelling_t2" else "ui"
-  # Display convention follows the statistic: UI -> studentized z (the cells whose
-  # block max is the UI statistic); T2 -> whitened z^2 cells (which sum to T2).
-  whiten <- use_t2
+  # The statistic selects the BLOCK test only (UI or T^2). The display is the same
+  # either way: the fill is the whitened z, and the cell-level statistic is the
+  # whitened z^2 (chi-square_1). Only the block borders depend on `stat_name`.
 
   ## ---- significant blocks for a family: sig_block override wins; otherwise the
   ## requested member of the across-block adjustment family {raw, holm, bonf, bh,
@@ -341,10 +346,14 @@ plotGammaHeatmap <- function(fit, detection = NULL, block_labels = NULL,
   ## ---- quantile panel ----
   if ("quantile" %in% fams) {
     if (!is.null(detection) && !is.null(detection$z_raw)) {
-      vals <- if (whiten) detection$cellstat else detection$z_raw
-      rl   <- rownames(detection$z_raw); if (is.null(rl)) rl <- format(taus)
-      flab <- if (whiten) expression(tilde(z)^2) else "z"
-      sub  <- if (whiten) "quantile: whitened z² (Hotelling cells)" else "quantile: studentized z"
+      if (!is.null(detection$z_white)) {
+        vals <- detection$z_white
+        flab <- expression(tilde(z)); sub <- "quantile: whitened z"
+      } else {
+        vals <- detection$z_raw
+        flab <- "z"; sub <- "quantile: studentized z (whitened cells unavailable)"
+      }
+      rl <- rownames(vals); if (is.null(rl)) rl <- format(taus)
     } else {
       vals <- .bqq_coefs(fit, m, r)$gamma; rl <- format(taus)
       flab <- expression(gamma); sub <- "quantile: block-shift gamma"
@@ -352,19 +361,23 @@ plotGammaHeatmap <- function(fit, detection = NULL, block_labels = NULL,
     if (!is.null(detection)) sub <- paste0(sub, outline_lab)
     sc <- get_sig("quantile")
     panels$quantile <- heat(vals, rl, sc, get_sig_cells("quantile", sc, nrow(vals)),
-                            flab, sub, diverging = !whiten)
+                            flab, sub, diverging = TRUE)
   }
 
   ## ---- QSS panel ----
   if ("qss" %in% fams) {
-    vals <- if (whiten) detection$cellstat_qss else detection$z_qss
-    rl   <- rownames(detection$z_qss); if (is.null(rl)) rl <- c("L", "S", "Sk", "K")
-    flab <- if (whiten) expression(tilde(z)^2) else "z"
-    sub  <- if (whiten) "QSS: whitened z² (Hotelling cells)" else "QSS: studentized shape contrasts"
+    if (!is.null(detection$z_white_qss)) {
+      vals <- detection$z_white_qss
+      flab <- expression(tilde(z)); sub <- "QSS: whitened shape contrasts"
+    } else {
+      vals <- detection$z_qss
+      flab <- "z"; sub <- "QSS: studentized shape contrasts (whitened cells unavailable)"
+    }
+    rl <- rownames(vals); if (is.null(rl)) rl <- c("L", "S", "Sk", "K")
     sub <- paste0(sub, outline_lab)
     sc <- get_sig("qss")
     panels$qss <- heat(vals, rl, sc, get_sig_cells("qss", sc, nrow(vals)),
-                       flab, sub, diverging = !whiten)
+                       flab, sub, diverging = TRUE)
   }
 
   ## ---- return one panel, or stack both ----

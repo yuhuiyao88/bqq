@@ -44,9 +44,14 @@ outlined (significant) blocks: \code{"calib"} (default; the calibrated
 single-step charting-constant rule), \code{"raw"}, \code{"holm"},
 \code{"bonf"}, or \code{"bh"}, as computed by
 \code{detectChangepoints_gamma()}. The quantile levels, significance level,
-and display convention are all inherited from \code{detection}: the fill is
-the studentized z when the recorded statistic is \code{"ui"}, and the
-whitened \eqn{\tilde z^2} Hotelling cells when it is \code{"hotelling_t2"}.}
+and significance level are inherited from \code{detection}. The recorded
+statistic selects the BLOCK test only: the display is identical for
+\code{"ui"} and \code{"hotelling_t2"}. The fill is always the whitened
+\eqn{\tilde z} on a diverging scale centred at zero, and the cell-level
+statistic is always the whitened \eqn{\tilde z^2}; only which blocks are
+bordered depends on the statistic. Detection objects predating the
+whitened-cell fields fall back to the studentized z, which the panel
+subtitle records.}
 
 \item{mark_cells}{Logical; when \code{TRUE} (default) the cells responsible for a
 flagged block are given a second, darker border. A block that the block-level
