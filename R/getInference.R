@@ -509,7 +509,8 @@ getEta <- function(fit_result, H = NULL, X = NULL, offset = NULL, n_samples = 10
     c_block <- stats::qchisq(1 - alpha, df = ncell)                # block charting constant c_j^{T2} (Eq. 23)
     c_ss <- stats::qchisq((1 - alpha)^(1 / r), df = ncell)         # full (process) charting constant c^{T2}:
                                                                    #   Sidak (1967) single-step over r blocks (Eq. 24)
-    out$hotelling_t2 <- .bqq_adj_family(W, p, alpha, c_ss, c_block)
+    out$hotelling_t2 <- .bqq_cell_layer(.bqq_adj_family(W, p, alpha, c_ss, c_block),
+                                        zt_mat, alpha, "t2")
     out$overall_t2   <- max(W)                                     # overall T^2 = max_j T^2_j (Sec 3.2)
     out$overall_t2_p <- 1 - stats::pchisq(out$overall_t2, df = ncell)^r  # p^{T2}=1-(P(chi2_m<=T^2))^r (Eq. 24)
   }
@@ -519,7 +520,8 @@ getEta <- function(fit_result, H = NULL, X = NULL, offset = NULL, n_samples = 10
     c_block <- stats::qnorm((1 + (1 - alpha)^(1 / ncell)) / 2)     # block charting constant c_j^{UI} (Eq. 21)
     c_ss <- stats::qnorm((1 + (1 - alpha)^(1 / (ncell * r))) / 2)  # full (process) charting constant c^{UI}:
                                                                    #   order-statistic single-step over all cells (Eq. 22)
-    out$ui <- .bqq_adj_family(M, p, alpha, c_ss, c_block)
+    out$ui <- .bqq_cell_layer(.bqq_adj_family(M, p, alpha, c_ss, c_block),
+                              zt_mat, alpha, "ui")
     out$overall_ui   <- max(abs(zt))
     out$overall_ui_p <- 1 - (2 * stats::pnorm(out$overall_ui) - 1)^(ncell * r)  # p^{UI} (Eq. 22)
   }
@@ -543,6 +545,46 @@ getEta <- function(fit_result, H = NULL, X = NULL, offset = NULL, n_samples = 10
        bonf  = which(ab < alpha),
        bh    = which(az < alpha),
        calib = which(stat > c_ss))
+}
+
+# Cell-level localization (manuscript Sec 3.2): for each across-block member,
+# invert the block decision into its operative level t_j (Eq. 25's FAP_j^(0),
+# plus the raw and calibrated variants), convert to the cell constant on the
+# statistic's own scale -- UI: Phi^-1((1+(1-t_j)^(1/m))/2) on |z~|; T^2:
+# chi^2_m^-1(1-t_j) on z~^2 -- and flag cells INSIDE flagged blocks only. A cell
+# exceedance implies the block exceedance for both statistics, so the cells
+# localize the block decisions and introduce no additional hypothesis family.
+.bqq_cell_layer <- function(fam, zt_mat, alpha, kind) {
+  if (is.null(fam)) return(fam)
+  ncell <- nrow(zt_mat); r <- ncol(zt_mat)
+  ranks <- rank(fam$pvalue, ties.method = "first")
+  lev <- list(
+    raw  = rep(alpha, r),                      # Eq. (21)/(23) block constants
+    bonf = rep(alpha / r, r),                  # Eq. (25), Bonferroni
+    holm = alpha / (r - ranks + 1),            # Eq. (25), Holm (rank k by ascending p)
+    bh   = rep(length(fam$bh) * alpha / r, r)  # Eq. (25), BH (k* = #flagged blocks)
+  )
+  const <- lapply(lev, function(t) {
+    t <- pmin(pmax(t, 1e-12), 1 - 1e-12)
+    if (kind == "ui") stats::qnorm((1 + (1 - t)^(1 / ncell)) / 2)
+    else              stats::qchisq(1 - t, df = ncell)
+  })
+  const$calib <- rep(fam$c_calib, r)           # Eq. (22)/(24) process constants
+  cellstat <- if (kind == "ui") abs(zt_mat) else zt_mat^2
+  fam$cell_c <- const
+  fam$cells <- lapply(const, function(cc) {
+    keep <- matrix(FALSE, ncell, r,
+                   dimnames = list(rownames(zt_mat), NULL))
+    keep
+  })
+  for (mem in names(const)) {
+    cols <- fam[[mem]]
+    if (length(cols) > 0) {
+      fam$cells[[mem]][, cols] <-
+        sweep(cellstat[, cols, drop = FALSE], 2, const[[mem]][cols], `>`)
+    }
+  }
+  fam
 }
 
 #' Detect change points using gamma coefficients
@@ -587,14 +629,14 @@ getEta <- function(fit_result, H = NULL, X = NULL, offset = NULL, n_samples = 10
 #'   is a deprecated alias for \code{"ui"}. The legacy \code{calibrated}/\code{block_test}/
 #'   \code{qss} flags are derived from \code{basis} and \code{statistic} unless passed
 #'   explicitly.
+#' @param adjust The across-block decision rule of record: \code{"calib"}
+#'   (default; the calibrated single-step charting constants of Eqs. (22)/(24)),
+#'   \code{"raw"} (the block-level constants of Eqs. (21)/(23)), or
+#'   \code{"bonf"}/\code{"holm"}/\code{"bh"} (the multiplicity-adjusted
+#'   constants of Eq. (25)). The full family is always computed and returned in
+#'   \code{tests}; \code{adjust} selects which member the plots render — plots
+#'   carry no decision arguments of their own.
 #' @param seed Random seed (only used when generating new Laplace samples).
-#' @param calibrated,block_test,qss DEPRECATED — use \code{basis} and \code{statistic},
-#'   which express every test combination (\code{calibrated} = UI on the quantile
-#'   basis, \code{block_test} = Hotelling \eqn{T^2} on the quantile basis,
-#'   \code{qss} = the QSS shape-contrast family). When left \code{NULL} (default)
-#'   they are derived from \code{basis} x \code{statistic}; passing them explicitly
-#'   still overrides for now, with a deprecation warning, and will stop being
-#'   accepted in a future version.
 #' @return A list. \code{tests[[basis]]} (\code{"quantile"} / \code{"qss"}) carries
 #'   \code{$z} (studentized cells), \code{$z_white} (whitened), \code{$cellstat}
 #'   (whitened \eqn{\tilde z^2}), and \code{$ui} / \code{$hotelling_t2} — each with
@@ -611,20 +653,14 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
                                      laplace_n_samples = 1000, alpha = 0.05,
                                      basis = c("quantile", "qss"),
                                      statistic = c("ui", "hotelling_t2"),
-                                     calibrated = NULL, block_test = NULL, qss = NULL,
+                                     adjust = c("calib", "raw", "holm", "bonf", "bh"),
                                      seed = NULL) {
 
-  # Validate signal_position argument
+  # Validate arguments. `adjust` is the across-block decision rule of record:
+  # it is stored in the output and every plot renders exactly this rule (plots
+  # carry no decision arguments of their own).
   signal_position <- match.arg(signal_position)
-
-  # Legacy test-selection flags: accepted with a warning for now (they override
-  # the basis/statistic interface); scheduled for removal.
-  if (!is.null(calibrated) || !is.null(block_test) || !is.null(qss)) {
-    warning("'calibrated', 'block_test', and 'qss' are deprecated in ",
-            "detectChangepoints_gamma(); use 'basis' and 'statistic' instead. ",
-            "Explicit values still override for now but will be removed.",
-            call. = FALSE)
-  }
+  adjust <- match.arg(adjust)
 
   # ---- Two-family / two-statistic API ---------------------------------------
   # `basis`     : which test family to run — "quantile" (the raw quantile gammas)
@@ -642,15 +678,11 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
   statistic <- match.arg(statistic, c("ui", "hotelling_t2"), several.ok = TRUE)
   want_ui <- "ui"           %in% statistic
   want_t2 <- "hotelling_t2" %in% statistic
-  # Derive the legacy flags from basis x statistic unless the caller sets them.
-  if (is.null(calibrated)) calibrated <- ("quantile" %in% basis) && want_ui
-  if (is.null(block_test)) block_test <- ("quantile" %in% basis) && want_t2
-  if (is.null(qss))        qss        <- ("qss" %in% basis)
-  # Per-family / per-statistic gates (respect explicit legacy overrides).
-  do_q_ui     <- isTRUE(calibrated)
-  do_q_t2     <- isTRUE(block_test)
+  # Per-family / per-statistic gates, derived from basis x statistic.
+  do_q_ui     <- ("quantile" %in% basis) && want_ui
+  do_q_t2     <- ("quantile" %in% basis) && want_t2
   do_quantile <- do_q_ui || do_q_t2
-  do_qss_fam  <- isTRUE(qss)
+  do_qss_fam  <- ("qss" %in% basis)
   do_qss_ui   <- do_qss_fam && want_ui
   do_qss_t2   <- do_qss_fam && want_t2
 
@@ -1005,8 +1037,7 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
     overall_t2_qss = overall_t2_qss, overall_t2_qss_p = overall_t2_qss_p,
     # ---- configuration ----
     signal_position = signal_position, alpha = alpha,
-    basis = basis, statistic = statistic, taus = taus,
-    calibrated = calibrated, block_test = block_test, qss = qss
+    basis = basis, statistic = statistic, taus = taus, adjust = adjust
   )
 }
 

@@ -16,9 +16,7 @@ detectChangepoints_gamma(
   alpha = 0.05,
   basis = c("quantile", "qss"),
   statistic = c("ui", "hotelling_t2"),
-  calibrated = NULL,
-  block_test = NULL,
-  qss = NULL,
+  adjust = c("calib", "raw", "holm", "bonf", "bh"),
   seed = NULL
 )
 }
@@ -66,13 +64,13 @@ is a deprecated alias for \code{"ui"}. The legacy \code{calibrated}/\code{block_
 \code{qss} flags are derived from \code{basis} and \code{statistic} unless passed
 explicitly.}
 
-\item{calibrated, block_test, qss}{DEPRECATED — use \code{basis} and \code{statistic},
-which express every test combination (\code{calibrated} = UI on the quantile
-basis, \code{block_test} = Hotelling \eqn{T^2} on the quantile basis,
-\code{qss} = the QSS shape-contrast family). When left \code{NULL} (default)
-they are derived from \code{basis} x \code{statistic}; passing them explicitly
-still overrides for now, with a deprecation warning, and will stop being
-accepted in a future version.}
+\item{adjust}{The across-block decision rule of record: \code{"calib"}
+(default; the calibrated single-step charting constants of Eqs. (22)/(24)),
+\code{"raw"} (the block-level constants of Eqs. (21)/(23)), or
+\code{"bonf"}/\code{"holm"}/\code{"bh"} (the multiplicity-adjusted
+constants of Eq. (25)). The full family is always computed and returned in
+\code{tests}; \code{adjust} selects which member the plots render — plots
+carry no decision arguments of their own.}
 
 \item{seed}{Random seed (only used when generating new Laplace samples).}
 }

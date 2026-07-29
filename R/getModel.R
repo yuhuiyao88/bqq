@@ -1397,7 +1397,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
   list(
     fit = fit,
     map = map_fit,
-    y = y, H = H, X = X,
+    y = y, H = H, X = X, taus = taus,
     hessian = hessian,
     fit_method = fit_method,
     laplace_samples = laplace_samples,

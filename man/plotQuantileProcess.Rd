@@ -7,25 +7,20 @@
 plotQuantileProcess(
   fit,
   time = NULL,
-  taus = NULL,
   center = 0,
   scale = 1,
   detection = NULL,
-  alpha = 0.05,
-  y = NULL,
   title = NULL,
   xlab = "time",
   ylab = "value",
-  adjust = c("calib", "raw", "holm", "bonf", "bh"),
-  basis = NULL
+  show_onset = TRUE,
+  show_located = TRUE
 )
 }
 \arguments{
 \item{fit}{A MAP fit from \code{getModel()}.}
 
 \item{time}{Optional x-axis vector (default \code{seq_len(n)}).}
-
-\item{taus}{Quantile levels (default recovered from \code{fit}).}
 
 \item{center, scale}{Map the fit-scale quantiles/data back to the display scale
 as \code{value * scale + center} (e.g. the standardization used before fitting).}
@@ -37,12 +32,6 @@ localized change point \code{signal_obs} (circled point on the series), the
 latter obtained under whichever \code{signal_position} was passed to
 \code{detectChangepoints_gamma()}.}
 
-\item{alpha}{Retained for backward compatibility; block selection uses the
-adjustment families already computed by \code{detectChangepoints_gamma()} at its
-own \code{alpha}, so this argument does not affect the result.}
-
-\item{y}{Optional observed series override (default \code{fit$y}).}
-
 \item{title}{Optional plot title.}
 
 \item{xlab}{Label for the x axis (default \code{"time"}).}
@@ -52,12 +41,10 @@ series actually plotted, e.g. \code{"residual"} when the model was fitted to
 regression residuals, or \code{"difference"} when it was fitted to their
 first-order differences. Use \code{NULL} to drop the label.}
 
-\item{adjust}{Which across-block adjustment family flags the blocks:
-\code{"calib"} (default), \code{"raw"}, \code{"holm"}, \code{"bonf"}, or
-\code{"bh"}. Matches the \code{adjust} argument of \code{plotGammaHeatmap()}.}
-
-\item{basis}{Optional \code{"quantile"} or \code{"qss"} override; by default the
-basis recorded in \code{detection} is used (quantile if both were run).}
+\item{show_onset, show_located}{Logical display toggles (default TRUE): draw
+the block-onset marks and the localized change points recorded in
+\code{detection}. They only hide layers; the decisions themselves are
+made (and recorded) by \code{detectChangepoints_gamma()}.}
 }
 \value{
 A ggplot object.

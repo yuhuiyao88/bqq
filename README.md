@@ -85,18 +85,19 @@ fit$map$coverage      # per-quantile empirical coverage of the fitted curves
 # 4. Predictive quantile draws [iterations x quantiles x time]
 eta <- getEta(fit, H = H)
 
-# 5. Change-point detection: both bases, both statistics
+# 5. Change-point detection: both bases, both statistics. `adjust` is the
+#    across-block decision rule of record ("calib" default; also "raw",
+#    "holm", "bonf", "bh") -- every plot renders exactly this rule.
 det <- detectChangepoints_gamma(fit, taus = taus, l = l, w = w,
                                 basis = c("quantile", "qss"),
                                 statistic = c("ui", "hotelling_t2"),
+                                adjust = "calib",
                                 y = y, eta = eta)
 
-# 6. Plots
-plotQuantileProcess(fit, taus = taus)         # fitted quantile process
-fit$taus <- taus
+# 6. Plots: pure renderers of the fit and the recorded detection decisions.
+plotQuantileProcess(fit, detection = det)        # bands + localized change points
 plotQSSProcess(fit, eta = eta, detection = det)  # QSS profiles + detected blocks
-plotGammaHeatmap(fit, det)                    # outlines: calibrated rule (default)
-plotGammaHeatmap(fit, det, adjust = "holm")   # or "raw", "bonf", "bh"
+plotGammaHeatmap(fit, det)                       # blocks (grey) + cells (black)
 ```
 
 ## Core Functions
@@ -121,7 +122,7 @@ plotGammaHeatmap(fit, det, adjust = "holm")   # or "raw", "bonf", "bh"
 | Function | Description |
 |---|---|
 | `getQSS()` | Quantile Shape Statistics (location, scale, skewness, kurtosis) from predictive quantiles |
-| `detectChangepoints_gamma()` | Posterior whitening + UI / Hotelling T² block tests on the quantile and/or QSS bases; returns the full adjustment family (raw / Holm / Bonferroni / BH / calibrated) per basis and statistic |
+| `detectChangepoints_gamma()` | Posterior whitening + UI / Hotelling T² block tests on the quantile and/or QSS bases; computes the full adjustment family (raw / Holm / Bonferroni / BH / calibrated) with the matching cell-level constants and flags, and records the decision rule (`adjust`) that all plots render |
 
 ### Cross-Validation
 
@@ -136,7 +137,7 @@ plotGammaHeatmap(fit, det, adjust = "holm")   # or "raw", "bonf", "bh"
 | Function | Description |
 |---|---|
 | `plotQuantileProcess()` | The five fitted quantile curves over time |
-| `plotGammaHeatmap()` | Shift heatmap; panels, quantile levels, and fill follow the `detection` object (UI → studentized z; T² → whitened z̃² cells); `adjust` selects which adjustment-family member draws the significance outlines |
+| `plotGammaHeatmap()` | Shift heatmap: whitened-z fill, grey borders on flagged blocks, black borders on localized cells — all decisions (basis, statistic, `adjust`, constants) taken from the `detection` object; only display options (colors, labels, `mark_cells`) are settable |
 | `plotQSSProcess()` | QSS profiles over time with credible bands and detected blocks |
 
 ## Model Details
@@ -192,12 +193,16 @@ probability of any false alarm across all blocks and cells jointly.
 
 ### Deprecations (0.4.6)
 
-- `detectChangepoints_gamma()`: `calibrated`/`block_test`/`qss` are deprecated (use
-  `basis` and `statistic`); `n_calib` was removed (the calibrated constants are
-  analytic).
-- `plotGammaHeatmap()`: `taus`, `scale`, `alpha`, and `whiten` were removed — quantile
-  levels, significance level, and the fill convention are inherited from the
-  `detection` object; use `adjust` to choose the outline rule.
+- 0.4.8: plots are pure renderers. `plotGammaHeatmap()` lost `adjust`, `basis`,
+  `sig_block`, and `alpha`; `plotQuantileProcess()`/`plotQSSProcess()` lost
+  `taus`, `alpha`, `adjust`, `basis` (and the redundant `y` override) and gained
+  the display toggles `show_onset`/`show_located`. The decision rule moved into
+  `detectChangepoints_gamma(adjust = ...)`, which now also returns cell-level
+  constants and flags (`$cell_c`, `$cells`) implementing the manuscript's
+  Eqs. (21)-(25). The long-deprecated `calibrated`/`block_test`/`qss` arguments
+  were removed. `getModel()` now records `taus` in its return value.
+- 0.4.6: `detectChangepoints_gamma()` `n_calib` removed; `plotGammaHeatmap()`
+  `taus`, `scale`, `whiten` removed (levels and fill follow `detection`).
 
 ## References
 

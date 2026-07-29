@@ -10,18 +10,16 @@ plotQSSProcess(
   H = NULL,
   X = NULL,
   time = NULL,
-  taus = NULL,
   center = 0,
   scale = 1,
   level = 0.95,
   detection = NULL,
-  alpha = 0.05,
   seed = NULL,
   title = NULL,
   xlab = "time",
   ylab = NULL,
-  adjust = c("calib", "raw", "holm", "bonf", "bh"),
-  basis = NULL
+  show_onset = TRUE,
+  show_located = TRUE
 )
 }
 \arguments{
@@ -34,8 +32,6 @@ computed internally if not supplied.}
 
 \item{time}{Optional x-axis vector (default \code{seq_len(n)}).}
 
-\item{taus}{Quantile levels (default recovered from \code{fit}).}
-
 \item{center, scale}{Map the fit-scale quantiles to the display scale.}
 
 \item{level}{Credible-band level (default 0.95).}
@@ -45,10 +41,6 @@ computed internally if not supplied.}
 its \code{detected_blocks} supplies both the block onset (dashed line) and the
 localized change point \code{signal_obs} (solid line), the latter obtained under
 whichever \code{signal_position} was passed to \code{detectChangepoints_gamma()}.}
-
-\item{alpha}{Retained for backward compatibility; block selection uses the
-adjustment families already computed by \code{detectChangepoints_gamma()} at its
-own \code{alpha}, so this argument does not affect the result.}
 
 \item{seed}{Optional seed for \code{getEta()}.}
 
@@ -60,12 +52,10 @@ own \code{alpha}, so this argument does not affect the result.}
 the four panels are already named by their facet strips and each has its own
 free scale.}
 
-\item{adjust}{Which across-block adjustment family flags the blocks:
-\code{"calib"} (default), \code{"raw"}, \code{"holm"}, \code{"bonf"}, or
-\code{"bh"}. Matches the \code{adjust} argument of \code{plotGammaHeatmap()}.}
-
-\item{basis}{Optional \code{"quantile"} or \code{"qss"} override; by default the
-basis recorded in \code{detection} is used (quantile if both were run).}
+\item{show_onset, show_located}{Logical display toggles (default TRUE): draw
+the block-onset marks and the localized change points recorded in
+\code{detection}. They only hide layers; the decisions themselves are
+made (and recorded) by \code{detectChangepoints_gamma()}.}
 }
 \value{
 A ggplot object (four stacked, free-y facets).

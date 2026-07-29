@@ -9,11 +9,7 @@ plotGammaHeatmap(
   detection = NULL,
   block_labels = NULL,
   title = NULL,
-  sig_block = NULL,
-  basis = NULL,
-  adjust = c("calib", "raw", "holm", "bonf", "bh"),
   mark_cells = TRUE,
-  alpha = NULL,
   block_color = NULL,
   cell_color = "black",
   pos_color = NULL,
@@ -35,28 +31,6 @@ Must be unique (they become factor levels).}
 
 \item{title}{Optional plot title.}
 
-\item{sig_block}{Optional length-\code{r} logical vector of significant blocks.
-When supplied it takes precedence for the quantile panel: every cell in a
-significant block gets the grey border, so flagged blocks read as whole
-bordered columns. Default \code{NULL} keeps the detection-driven behavior.}
-
-\item{basis}{Optional character vector (\code{"quantile"}, \code{"qss"}) to force
-which panel(s) to draw, overriding the auto-detection from \code{detection}.}
-
-\item{adjust}{Which member of the across-block adjustment family determines the
-outlined (significant) blocks: \code{"calib"} (default; the calibrated
-single-step charting-constant rule), \code{"raw"}, \code{"holm"},
-\code{"bonf"}, or \code{"bh"}, as computed by
-\code{detectChangepoints_gamma()}. The quantile levels, significance level,
-and significance level are inherited from \code{detection}. The recorded
-statistic selects the BLOCK test only: the display is identical for
-\code{"ui"} and \code{"hotelling_t2"}. The fill is always the whitened
-\eqn{\tilde z} on a diverging scale centred at zero, and the cell-level
-statistic is always the whitened \eqn{\tilde z^2}; only which blocks are
-bordered depends on the statistic. Detection objects predating the
-whitened-cell fields fall back to the studentized z, which the panel
-subtitle records.}
-
 \item{mark_cells}{Logical; when \code{TRUE} (default) the cells responsible for a
 flagged block are given a second, darker border. A block that the block-level
 rule flags is bordered in \code{block_color}; inside it, each cell whose
@@ -66,9 +40,6 @@ is bordered in \code{cell_color}. This is the within-block localization step of
 Section 3.2: it runs only inside blocks that have already signaled, so it
 localizes a detected shift rather than adding a new family of tests, and the
 false alarm probability remains that of the block-level rule.}
-
-\item{alpha}{Significance level for the cell-level localization. Default
-\code{NULL} inherits \code{detection$alpha}, falling back to 0.05.}
 
 \item{block_color}{Border colour for cells of a flagged block (default grey).}
 
@@ -86,6 +57,11 @@ no canonical hex for those, so pass your own values to match a house palette.}
 are already named by the quantile levels or the QSS contrasts. When both panels
 are stacked, \code{xlab}/\code{ylab} apply to each panel; \code{title} is
 applied once to the combined figure.}
+
+\item{show_onset, show_located}{Logical display toggles (default TRUE): draw
+the block-onset marks and the localized change points recorded in
+\code{detection}. They only hide layers; the decisions themselves are
+made (and recorded) by \code{detectChangepoints_gamma()}.}
 }
 \value{
 A ggplot object when one family is shown; a \pkg{patchwork} of two panels
