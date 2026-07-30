@@ -245,8 +245,8 @@ plotQSSProcess <- function(fit, eta = NULL, H = NULL, X = NULL, time = NULL,
 #' Graph type 3: block-shift heatmap(s) with black borders on the significant
 #' cells. The function auto-detects, from the \code{detection} object, which test
 #' family/families were run and shows the matching panel(s): a \strong{quantile}
-#' panel (the block-shift gammas as a quantile-by-block map) and/or a \strong{QSS}
-#' panel (the four studentized shape contrasts L, S, Sk, K by block). If only one
+#' panel (the quantile shift coefficients as a quantile-by-block map) and/or a \strong{QSS}
+#' panel (the four QSS shift coefficients LS, ScS, SkS, KS by block). If only one
 #' family was computed, only that panel is drawn; if both, both are stacked (via
 #' \pkg{patchwork} when available). Borders follow the statistic recorded in
 #' \code{detection}: per-cell where \eqn{|z|} exceeds the calibrated cell-max
@@ -336,7 +336,7 @@ plotGammaHeatmap <- function(fit, detection = NULL, block_labels = NULL,
       if (use_t2) detection$significant_wald_calib else detection$significant_calib
     }
   }
-  outline_lab <- paste0("  (", if (use_t2) "T2" else "UI", "/", adjust, ")")
+  outline_lab <- paste0(": ", if (use_t2) "T2" else "UI", "/", adjust)
 
   ## ---- within-block localization (manuscript Sec 3.2): a OOC block is
   ## bordered in block_color; inside it, a cell is bordered in cell_color when
@@ -394,17 +394,19 @@ plotGammaHeatmap <- function(fit, detection = NULL, block_labels = NULL,
     if (!is.null(detection) && !is.null(detection$z_raw)) {
       if (!is.null(detection$z_white)) {
         vals <- detection$z_white
-        flab <- expression(tilde(z)); sub <- "quantile: whitened z"
+        flab <- expression(tilde(z)); sub <- "Quantile Shift Coefficient"; note <- ""
       } else {
         vals <- detection$z_raw
-        flab <- "z"; sub <- "quantile: studentized z (whitened cells unavailable)"
+        flab <- "z"; sub <- "Quantile Shift Coefficient"
+        note <- "  (studentized; whitened cells unavailable)"
       }
       rl <- rownames(vals); if (is.null(rl)) rl <- format(taus)
     } else {
       vals <- .bqq_coefs(fit, m, r)$gamma; rl <- format(taus)
-      flab <- expression(gamma); sub <- "quantile: block-shift gamma"
+      flab <- expression(gamma); sub <- "Quantile Shift Coefficient"
+      note <- "  (posterior mean)"
     }
-    if (!is.null(detection)) sub <- paste0(sub, outline_lab)
+    sub <- paste0(sub, if (!is.null(detection)) outline_lab else "", note)
     sc <- get_sig("quantile")
     panels$quantile <- heat(vals, rl, sc, get_sig_cells("quantile", sc, nrow(vals)),
                             flab, sub, diverging = TRUE)
@@ -414,13 +416,14 @@ plotGammaHeatmap <- function(fit, detection = NULL, block_labels = NULL,
   if ("qss" %in% fams) {
     if (!is.null(detection$z_white_qss)) {
       vals <- detection$z_white_qss
-      flab <- expression(tilde(z)); sub <- "QSS: whitened shape contrasts"
+      flab <- expression(tilde(z)); sub <- "QSS Shift Coefficient"; note <- ""
     } else {
       vals <- detection$z_qss
-      flab <- "z"; sub <- "QSS: studentized shape contrasts (whitened cells unavailable)"
+      flab <- "z"; sub <- "QSS Shift Coefficient"
+      note <- "  (studentized; whitened cells unavailable)"
     }
     rl <- rownames(vals); if (is.null(rl)) rl <- c("LS", "ScS", "SkS", "KS")
-    sub <- paste0(sub, outline_lab)
+    sub <- paste0(sub, outline_lab, note)
     sc <- get_sig("qss")
     panels$qss <- heat(vals, rl, sc, get_sig_cells("qss", sc, nrow(vals)),
                        flab, sub, diverging = TRUE)

@@ -71,8 +71,8 @@ A ggplot object when one family is shown; a \pkg{patchwork} of two panels
 Graph type 3: block-shift heatmap(s) with black borders on the significant
 cells. The function auto-detects, from the \code{detection} object, which test
 family/families were run and shows the matching panel(s): a \strong{quantile}
-panel (the block-shift gammas as a quantile-by-block map) and/or a \strong{QSS}
-panel (the four studentized shape contrasts L, S, Sk, K by block). If only one
+panel (the quantile shift coefficients as a quantile-by-block map) and/or a \strong{QSS}
+panel (the four QSS shift coefficients LS, ScS, SkS, KS by block). If only one
 family was computed, only that panel is drawn; if both, both are stacked (via
 \pkg{patchwork} when available). Borders follow the statistic recorded in
 \code{detection}: per-cell where \eqn{|z|} exceeds the calibrated cell-max
