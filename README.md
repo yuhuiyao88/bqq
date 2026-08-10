@@ -201,6 +201,29 @@ the full across-block family — raw, Holm, Bonferroni, BH, and the **calibrated
 single-step rule using analytic charting constants (Šidák-type) that control the
 probability of any false alarm across all blocks and cells jointly.
 
+### Monitoring bases (0.5.1)
+
+- `detectChangepoints_gamma(basis = ...)` accepts **`"lmom"`** and **`"maxent"`** in
+  addition to `"quantile"` and `"qss"`; `"both"` selects the first two and `"all"`
+  selects all four. Results appear at `det$tests$lmom` / `det$tests$maxent`, with
+  flat aliases `z_white_lmom` / `z_white_maxent`, and `plotGammaHeatmap()` renders
+  one panel per basis. All four are 4-cell linear contrasts on the block gammas and
+  are scored by identical code, so any difference between them comes from the
+  weights alone.
+- **0.5.1 changes what `"lmom"` means.** It now integrates
+  `lambda_{r+1} = int_0^1 Q(u) P*_r(u) du` over the **whole** unit interval, as the
+  definition requires, using the same surrogate quantile function as `"maxent"`
+  (piecewise-uniform interior, continuity-matched exponential tails). The 0.5.0
+  version integrated only `[tau_1, tau_m]` and then projected each shape row off the
+  location row to repair the resulting location leak. **The two give different
+  weights and different detections** -- e.g. the first L-skewness weight moves from
+  0.095133 to 0.079479 -- so results from 0.5.0 and 0.5.1 are not comparable. The
+  projection is gone; location invariance now holds by construction.
+- The `"lmom"` weights still depend on `taus` alone (no baseline). The `"maxent"`
+  weights are gradients and are evaluated at a standard-normal baseline, so they are
+  a mis-specified linearization under a markedly non-normal in-control law.
+  Derivations: `simulation_study/lmom_3cfg/MONITORING_BASES_math.md`.
+
 ### Breaking changes (0.5.0)
 
 - `getModel()`'s `lambda_iq` is renamed **`lambda_iq2`** and is now the

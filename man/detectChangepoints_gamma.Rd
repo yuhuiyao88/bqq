@@ -61,13 +61,19 @@ this is the nominal false alarm probability FAP0 of the manuscript.}
   \itemize{
     \item \code{"qss"} -- median, IQR, Bowley numerator, tail excess
       (\code{LS, ScS, SkS, KS}); exactly location-free by construction.
-    \item \code{"lmom"} -- shifted-Legendre L-moment contrasts evaluated by
-      trapezoid quadrature on the fitted grid. Because the grid truncates
-      \eqn{[0,1]} to \eqn{[\tau_1, \tau_m]}, the Legendre orthogonality that makes
-      the shape contrasts location-free fails; each shape row is therefore
-      projected off the L-location row to restore exact location invariance. That
-      correction is not cosmetic -- uncorrected, a pure location shift leaks about
-      -4.9\% into L-skewness.
+    \item \code{"lmom"} -- shifted-Legendre L-moment contrasts,
+      \eqn{\lambda_{r+1} = \int_0^1 Q(u) P^*_r(u) du}, evaluated over the
+      \strong{whole} unit interval as the definition requires. \eqn{Q} is not
+      observed off the fitted grid, so it is taken to be the same surrogate the
+      \code{"maxent"} basis uses (piecewise-uniform density between knots, hence
+      \eqn{Q} piecewise linear, with continuity-matched exponential tails). Every
+      integral is then closed form, and because the tail scales are linear in the
+      quantiles the weights depend on \code{taus} alone -- this basis needs no
+      baseline, unlike the maximum-entropy gradients. Location invariance holds by
+      construction (\eqn{\int_0^1 P^*_r = 0} for \eqn{r \ge 1}), so no correction
+      is applied; the builder errors rather than patching if it ever fails.
+      These are the exact L-moments \emph{of that surrogate}, not of the unknown
+      underlying quantile function.
     \item \code{"maxent"} -- gradients of the mean / sd / standardized skewness /
       standardized kurtosis of the maximum-entropy density consistent with the
       fitted quantiles (piecewise uniform between knots, exponential tails pinned

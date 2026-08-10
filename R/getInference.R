@@ -475,25 +475,63 @@ getEta <- function(fit_result, H = NULL, X = NULL, offset = NULL, n_samples = 10
 .bqq_lmom_weights <- function(taus) {
   m <- length(taus)
   if (m < 4L) stop("the 'lmom' basis needs at least 4 quantile levels", call. = FALSE)
-  d <- numeric(m)                                   # trapezoid weights on [tau_1, tau_m]
-  d[1] <- (taus[2] - taus[1]) / 2
-  d[m] <- (taus[m] - taus[m - 1]) / 2
-  if (m > 2L) d[2:(m - 1)] <- (taus[3:m] - taus[1:(m - 2)]) / 2
-  P <- rbind(rep(1, m), 2 * taus - 1, 6 * taus^2 - 6 * taus + 1,
-             20 * taus^3 - 30 * taus^2 + 12 * taus - 1)
-  W <- P * rep(d, each = 4L)
+  if (is.unsorted(taus, strictly = TRUE) || taus[1] <= 0 || taus[m] >= 1)
+    stop("the 'lmom' basis needs strictly increasing taus in (0, 1)", call. = FALSE)
 
-  # TRUNCATION CORRECTION (required, not cosmetic). The P*_r are orthogonal to
-  # P*_0 over the FULL [0,1], which is what makes each shape contrast
-  # location-free. The grid covers only [tau_1, tau_m] and over that range the
-  # orthogonality fails: INT_.025^.975 P*_2 = -0.046312 exactly. This is
-  # TRUNCATION, not quadrature error -- it does NOT vanish as m grows. Left
-  # uncorrected, a pure location shift delta leaks -0.0463*delta into L3 against
-  # L1 = 0.95*delta (about -4.9%), whereas the QSS contrast it replaces,
-  # SkS = g2 - 2g3 + g4, is EXACTLY location-free. Projecting each shape row off
-  # the L1 row restores the exact location invariance the untruncated L-moment
-  # already has.
-  for (rr in 2:4) W[rr, ] <- W[rr, ] - (sum(W[rr, ]) / sum(W[1, ])) * W[1, ]
+  # The L-moment is defined over the WHOLE unit interval,
+  #     lambda_{r+1} = INT_0^1 Q(u) P*_r(u) du,
+  # and that full range is what makes each shape contrast location-free, since
+  # INT_0^1 P*_r = 0 for r >= 1. Integrating only over [tau_1, tau_m] estimates a
+  # different quantity whose bias does NOT vanish as m grows, so this function
+  # integrates the whole interval and no truncation correction is applied.
+  #
+  # Q is not observed off the grid, so it is taken to be the SAME surrogate the
+  # 'maxent' basis uses (see .bqq_maxent_weights and MONITORING_BASES_math.md):
+  # piecewise-uniform density between knots -- hence Q piecewise LINEAR in u --
+  # with continuity-matched exponential tails, giving
+  #     Q(u) = q_1 + s_1 log(u/tau_1)                  for u < tau_1,
+  #     Q(u) = q_m + s_m log((1-tau_m)/(1-u))          for u > tau_m,
+  # with s_1 = tau_1 (q_2-q_1)/p_1 and s_m = (1-tau_m)(q_m-q_{m-1})/p_{m-1}.
+  # Both tail scales are LINEAR in q, so lambda stays a linear functional of q and
+  # the weights depend on `taus` alone -- the basis needs no baseline, unlike the
+  # maximum-entropy gradients.
+  #
+  # Every integral below is closed form: P*_r is a polynomial, Q is piecewise
+  # linear on the interior, and the tail integrals reduce to
+  # INT_0^a u^j log(u/a) du = -a^(j+1)/(j+1)^2.
+  CO <- list(c(1), c(-1, 2), c(1, -6, 6), c(-1, 12, -30, 20))   # P*_0 .. P*_3
+  p  <- diff(taus)
+  a  <- taus[1]                 # lower tail mass
+  cc <- 1 - taus[m]             # upper tail mass
+  W  <- matrix(0, 4L, m)
+
+  for (r in 1:4) {
+    co <- CO[[r]]; j <- seq_along(co)              # j = power + 1
+    # interior: exact integral of the two hat functions against P*_{r-1}
+    for (k in seq_len(m - 1L)) {
+      al <- taus[k]; be <- taus[k + 1L]
+      I1 <- sum(co * (be^j       - al^j)       / j)          # INT P
+      I2 <- sum(co * (be^(j + 1) - al^(j + 1)) / (j + 1))    # INT u P
+      W[r, k]      <- W[r, k]      + (be * I1 - I2) / p[k]
+      W[r, k + 1L] <- W[r, k + 1L] + (I2 - al * I1) / p[k]
+    }
+    # tails, exact; the log-integrals fold into the 1/j^2 terms
+    A <-  sum(co * a^j / j)
+    B <- -sum(co * a^j / j^2)
+    C <- (-1)^(r - 1) * sum(co * cc^j / j)
+    E <- (-1)^(r - 1) * sum(co * cc^j / j^2)
+    W[r, 1L]      <- W[r, 1L]      + A - B * a / p[1]
+    W[r, 2L]      <- W[r, 2L]      +     B * a / p[1]
+    W[r, m]       <- W[r, m]       + C + E * cc / p[m - 1L]
+    W[r, m - 1L]  <- W[r, m - 1L]  -     E * cc / p[m - 1L]
+  }
+
+  # Location invariance now holds BY CONSTRUCTION (INT_0^1 P*_r = 0, r >= 1);
+  # fail loudly rather than silently patch if it ever stops holding.
+  bad <- max(abs(rowSums(W[2:4, , drop = FALSE])))
+  if (!is.finite(bad) || bad > 1e-8)
+    stop("lmom weights lost location invariance (max row sum ", format(bad),
+         "); the full-interval integration is not closing.", call. = FALSE)
 
   dimnames(W) <- list(c("L-location", "L-scale", "L-skewness", "L-kurtosis"),
                       format(taus))
@@ -733,13 +771,19 @@ getEta <- function(fit_result, H = NULL, X = NULL, offset = NULL, n_samples = 10
 #'   \itemize{
 #'     \item \code{"qss"} -- median, IQR, Bowley numerator, tail excess
 #'       (\code{LS, ScS, SkS, KS}); exactly location-free by construction.
-#'     \item \code{"lmom"} -- shifted-Legendre L-moment contrasts evaluated by
-#'       trapezoid quadrature on the fitted grid. Because the grid truncates
-#'       \eqn{[0,1]} to \eqn{[\tau_1, \tau_m]}, the Legendre orthogonality that makes
-#'       the shape contrasts location-free fails; each shape row is therefore
-#'       projected off the L-location row to restore exact location invariance. That
-#'       correction is not cosmetic -- uncorrected, a pure location shift leaks about
-#'       -4.9\% into L-skewness.
+#'     \item \code{"lmom"} -- shifted-Legendre L-moment contrasts,
+#'       \eqn{\lambda_{r+1} = \int_0^1 Q(u) P^*_r(u) du}, evaluated over the
+#'       \strong{whole} unit interval as the definition requires. \eqn{Q} is not
+#'       observed off the fitted grid, so it is taken to be the same surrogate the
+#'       \code{"maxent"} basis uses (piecewise-uniform density between knots, hence
+#'       \eqn{Q} piecewise linear, with continuity-matched exponential tails). Every
+#'       integral is then closed form, and because the tail scales are linear in the
+#'       quantiles the weights depend on \code{taus} alone -- this basis needs no
+#'       baseline, unlike the maximum-entropy gradients. Location invariance holds by
+#'       construction (\eqn{\int_0^1 P^*_r = 0} for \eqn{r \ge 1}), so no correction
+#'       is applied; the builder errors rather than patching if it ever fails.
+#'       These are the exact L-moments \emph{of that surrogate}, not of the unknown
+#'       underlying quantile function.
 #'     \item \code{"maxent"} -- gradients of the mean / sd / standardized skewness /
 #'       standardized kurtosis of the maximum-entropy density consistent with the
 #'       fitted quantiles (piecewise uniform between knots, exponential tails pinned
