@@ -14,6 +14,12 @@ cv_copss_map(
   prior_beta = "normal",
   prior_gamma = "spike_slab",
   map_iter = 2000,
+  lambda_iq2 = 1,
+  adaptive_iq = FALSE,
+  iq_em_max_iter = 30,
+  iq_em_tol = 0.001,
+  iq_em_mc_tol = 0.02,
+  iq_em_update = c("em", "fixedpoint"),
   seed = 123,
   verbose = TRUE
 )
@@ -34,6 +40,18 @@ cv_copss_map(
 \item{prior_gamma}{Prior type for gamma (default "spike_slab").}
 
 \item{map_iter}{Maximum iterations for MAP optimization.}
+
+\item{lambda_iq2}{Squared IQ fusion weight passed to \code{getModel} (the effective
+rate is its square root). Used as the fixed value when \code{adaptive_iq = FALSE},
+or as the EM starting value when TRUE.}
+
+\item{adaptive_iq}{Logical; whether each CV fit learns \eqn{\lambda_{iq}^2} by EM.
+Defaults to FALSE here, unlike \code{getModel}, because every EM iteration is a
+full refit: leaving it on multiplies the cost of the CV sweep by up to
+\code{iq_em_max_iter}. Set TRUE only if the IQ level must be retuned per fold.}
+
+\item{iq_em_max_iter, iq_em_tol, iq_em_mc_tol, iq_em_update}{EM controls forwarded to
+\code{getModel}; see there.}
 
 \item{seed}{Random seed.}
 

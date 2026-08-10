@@ -273,15 +273,25 @@ plotQSSProcess <- function(fit, eta = NULL, H = NULL, X = NULL, time = NULL,
 #'   Section 3.2: it runs only inside blocks that have already signaled, so it
 #'   localizes a detected shift rather than adding a new family of tests, and the
 #'   false alarm probability remains that of the block-level rule.
-#' @param block_color Border colour for cells of a OOC block (default grey).
-#' @param cell_color Border colour for the localized cells within a OOC block
+#' @param block_color Border color for cells of a OOC block (default grey).
+#' @param cell_color Border color for the localized cells within a OOC block
 #'   (default black).
 #' @param xlab Label for the x axis (default \code{"block"}).
 #' @param ylab Label for the y axis. Default \code{NULL} (no label), since the rows
 #'   are already named by the quantile levels or the QSS contrasts. When both panels
 #'   are stacked, \code{xlab}/\code{ylab} apply to each panel; \code{title} is
 #'   applied once to the combined figure.
-#' @param pos_color,neg_color End colours of the diverging fill: positive
+#' @param z_limit Positive scalar fixing the diverging fill scale to
+#'   \code{c(-z_limit, z_limit)} whenever the fill is on a z scale -- the whitened
+#'   \eqn{\tilde z} cells, or the studentized \code{z} fallback (default 3). A FIXED
+#'   scale is the point: with a data-driven limit the same color means a different
+#'   number in every figure, so two fits cannot be compared by eye. Cells beyond the
+#'   limit are clipped to the end color (not dropped), and the subtitle records that
+#'   clipping occurred and how far out the extreme cell was. Set \code{NULL} to
+#'   restore the old data-driven symmetric limit. Ignored when the fill is the raw
+#'   posterior-mean \eqn{\gamma}, where a fixed \eqn{\pm 3} would be meaningless --
+#'   those panels always use a data-driven limit.
+#' @param pos_color,neg_color End colors of the diverging fill: positive
 #'   \eqn{\tilde z} and negative \eqn{\tilde z} respectively, white at zero.
 #'   Defaults are a muted, lightness-matched Morandi-style red and blue. There is
 #'   no canonical hex for those, so pass your own values to match a house palette.
@@ -292,6 +302,7 @@ plotGammaHeatmap <- function(fit, detection = NULL, block_labels = NULL,
                              title = NULL, mark_cells = TRUE,
                              block_color = NULL, cell_color = "black",
                              pos_color = NULL, neg_color = NULL,
+                             z_limit = 3,
                              xlab = "block", ylab = NULL) {
   .bqq_need_ggplot2()
   pal <- .bqq_pal
@@ -306,11 +317,19 @@ plotGammaHeatmap <- function(fit, detection = NULL, block_labels = NULL,
   ## families (basis), which block statistic, and which across-block rule
   ## (adjust) were chosen when detectChangepoints_gamma() was run. The plot has
   ## no decision arguments of its own. ----
+  ALL_FAMS <- c("quantile", "qss", "lmom", "maxent")
   fams <- if (is.null(detection)) "quantile"
           else if (!is.null(detection$basis)) detection$basis
           else c("quantile", if (!is.null(detection$z_qss)) "qss")
-  fams <- intersect(c("quantile", "qss"), fams)
-  if ("qss" %in% fams && (is.null(detection) || is.null(detection$z_qss))) fams <- setdiff(fams, "qss")
+  fams <- intersect(ALL_FAMS, fams)
+  # keep only families the detection object actually carries cells for
+  have <- function(f) switch(f,
+    quantile = TRUE,
+    qss      = !is.null(detection$z_qss),
+    lmom     = !is.null(detection$z_lmom),
+    maxent   = !is.null(detection$z_maxent),
+    FALSE)
+  if (!is.null(detection)) fams <- fams[vapply(fams, have, logical(1))]
   if (length(fams) == 0) fams <- "quantile"
   stat <- if (!is.null(detection) && !is.null(detection$statistic)) detection$statistic else "ui"
   use_t2 <- ("hotelling_t2" %in% stat) && !("ui" %in% stat)   # UI wins if both were run
@@ -364,21 +383,42 @@ plotGammaHeatmap <- function(fit, detection = NULL, block_labels = NULL,
 
   ## ---- single-panel builder; sig_cols = significant blocks (whole-column border),
   ## sig_cells = logical ncell x r matrix of localized cells within those blocks ----
-  heat <- function(vals, rowlab, sig_cols, sig_cells, fill_lab, subtitle, diverging) {
+  heat <- function(vals, rowlab, sig_cols, sig_cells, fill_lab, subtitle, diverging,
+                   fixed_lim = NULL) {
     d <- expand.grid(ri = seq_len(nrow(vals)), bj = seq_len(r))
     d$val   <- vals[cbind(d$ri, d$bj)]
     d$sig   <- d$bj %in% sig_cols
     d$cell  <- sig_cells[cbind(d$ri, d$bj)]
     d$row   <- factor(rowlab[d$ri], levels = rowlab)
     d$block <- factor(blk[d$bj], levels = blk)
+
+    # A FIXED fill scale is what makes two figures comparable; a data-driven one
+    # silently redefines what a color means. Values beyond the fixed limit are
+    # clipped to the end color rather than dropped (ggplot renders out-of-limits
+    # as grey NA, which would read as "missing" instead of "extreme"), and the
+    # clipping is disclosed in the subtitle.
+    obs_max <- suppressWarnings(max(abs(vals), na.rm = TRUE))
+    clipped <- 0L
+    if (diverging && !is.null(fixed_lim) && is.finite(fixed_lim) && fixed_lim > 0) {
+      lim <- fixed_lim
+      clipped <- sum(abs(d$val) > lim, na.rm = TRUE)
+      d$fill_val <- pmin(pmax(d$val, -lim), lim)
+    } else {
+      lim <- obs_max; if (!is.finite(lim) || lim == 0) lim <- 1
+      d$fill_val <- d$val
+    }
+    if (clipped > 0L) {
+      subtitle <- paste0(subtitle, sprintf("  (fill fixed at +/-%g; %d cell%s clipped, max |z| = %.2f)",
+                                           lim, clipped, if (clipped == 1L) "" else "s", obs_max))
+    }
+
     g <- ggplot2::ggplot(d, ggplot2::aes(x = block, y = row)) +
-      ggplot2::geom_tile(ggplot2::aes(fill = val)) +
+      ggplot2::geom_tile(ggplot2::aes(fill = fill_val)) +
       ggplot2::geom_tile(data = d[d$sig, , drop = FALSE], fill = NA,
                          color = blk_col, linewidth = 0.6) +
       ggplot2::geom_tile(data = d[d$cell, , drop = FALSE], fill = NA,
                          color = cell_color, linewidth = 1.0)
     if (diverging) {
-      lim <- max(abs(vals), na.rm = TRUE); if (!is.finite(lim) || lim == 0) lim <- 1
       g <- g + ggplot2::scale_fill_gradient2(low = neg_color, mid = "white", high = pos_color,
                                              midpoint = 0, limits = c(-lim, lim))
     } else {
@@ -401,15 +441,18 @@ plotGammaHeatmap <- function(fit, detection = NULL, block_labels = NULL,
         note <- "  (studentized; whitened cells unavailable)"
       }
       rl <- rownames(vals); if (is.null(rl)) rl <- format(taus)
+      zscale <- TRUE                  # z-tilde or studentized z: fix the fill scale
     } else {
       vals <- .bqq_coefs(fit, m, r)$gamma; rl <- format(taus)
       flab <- expression(gamma); sub <- "Quantile Shift Coefficient"
       note <- "  (posterior mean)"
+      zscale <- FALSE                 # raw coefficients: +/-3 would be meaningless
     }
     sub <- paste0(sub, if (!is.null(detection)) outline_lab else "", note)
     sc <- get_sig("quantile")
     panels$quantile <- heat(vals, rl, sc, get_sig_cells("quantile", sc, nrow(vals)),
-                            flab, sub, diverging = TRUE)
+                            flab, sub, diverging = TRUE,
+                            fixed_lim = if (zscale) z_limit else NULL)
   }
 
   ## ---- QSS panel ----
@@ -426,21 +469,44 @@ plotGammaHeatmap <- function(fit, detection = NULL, block_labels = NULL,
     sub <- paste0(sub, outline_lab, note)
     sc <- get_sig("qss")
     panels$qss <- heat(vals, rl, sc, get_sig_cells("qss", sc, nrow(vals)),
-                       flab, sub, diverging = TRUE)
+                       flab, sub, diverging = TRUE, fixed_lim = z_limit)
   }
 
-  ## ---- return one panel, or stack both ----
+  ## ---- alternative shape bases: identical rendering, different rotation ----
+  shape_panel <- function(fam, zt, zs, default_rows, label) {
+    if (!(fam %in% fams)) return(invisible(NULL))
+    if (!is.null(zt)) {
+      vals <- zt; flab <- expression(tilde(z)); note <- ""
+    } else {
+      vals <- zs; flab <- "z"; note <- "  (studentized; whitened cells unavailable)"
+    }
+    if (is.null(vals)) return(invisible(NULL))
+    rl <- rownames(vals); if (is.null(rl)) rl <- default_rows
+    sc <- get_sig(fam)
+    panels[[fam]] <<- heat(vals, rl, sc, get_sig_cells(fam, sc, nrow(vals)),
+                           flab, paste0(label, outline_lab, note),
+                           diverging = TRUE, fixed_lim = z_limit)
+  }
+  shape_panel("lmom", detection$z_white_lmom, detection$z_lmom,
+              c("L-location", "L-scale", "L-skewness", "L-kurtosis"),
+              "L-moment Shift Coefficient")
+  shape_panel("maxent", detection$z_white_maxent, detection$z_maxent,
+              c("ME-location", "ME-scale", "ME-skewness", "ME-kurtosis"),
+              "Maximum-entropy Shift Coefficient")
+
+  ## ---- return one panel, or stack them in the order requested ----
+  panels <- panels[intersect(fams, names(panels))]
   if (length(panels) == 1L) {
     p <- panels[[1]]
     if (!is.null(title)) p <- p + ggplot2::labs(title = title)
     return(p)
   }
   if (requireNamespace("patchwork", quietly = TRUE)) {
-    combo <- patchwork::wrap_plots(panels$quantile, panels$qss, ncol = 1L)
+    combo <- patchwork::wrap_plots(panels, ncol = 1L)
     if (!is.null(title)) combo <- combo + patchwork::plot_annotation(title = title)
     return(combo)
   }
-  message("Both quantile and QSS results are present; install 'patchwork' to stack ",
+  message(length(panels), " basis panels are present; install 'patchwork' to stack ",
           "them into one figure. Returning a named list of ggplot objects instead.")
   panels
 }

@@ -72,15 +72,25 @@ H <- getSustainedShift(n, l = l, w = w)
 
 # 3. Fit. The defaults implement the full method: unit-information warm-up prior
 #    on the intercepts, marginal LASSO quantile-regression initialization,
-#    tight-tolerance L-BFGS (history 25), spike-and-slab prior on the shifts.
+#    tight-tolerance L-BFGS (history 25), spike-and-slab prior on the shifts,
+#    and an EM-learned interquantile fusion weight (adaptive_iq = TRUE).
 fit <- getModel(y, taus, H = H, w = w,
                 fit_method = "map",          # MAP + Laplace draws
                 prior_gamma = "spike_slab",
-                lambda_iq = 0.2, seed = 1)
+                seed = 1)
 
 fit$map$termination   # human-readable optimizer exit status
 fit$map$coverage      # per-quantile empirical coverage of the fitted curves
                       # (a bad fit warns automatically)
+fit$iq_em$lambda_iq2  # the learned squared IQ weight
+fit$iq_em$trace       # one row per EM iteration
+
+# To pin the IQ weight instead of learning it, give the SQUARED value.
+# `lambda_iq2` replaces the old `lambda_iq`: the effective fusion rate is
+# sqrt(lambda_iq2), so the former `lambda_iq = 0.2` is now `lambda_iq2 = 0.04`.
+fit_fixed <- getModel(y, taus, H = H, w = w,
+                      fit_method = "map", prior_gamma = "spike_slab",
+                      adaptive_iq = FALSE, lambda_iq2 = 0.04, seed = 1)
 
 # 4. Predictive quantile draws [iterations x quantiles x time]
 eta <- getEta(fit, H = H)
@@ -190,6 +200,30 @@ block by the UI statistic (max |z̃|) and/or Hotelling T² (sum z̃²). Each tes
 the full across-block family — raw, Holm, Bonferroni, BH, and the **calibrated**
 single-step rule using analytic charting constants (Šidák-type) that control the
 probability of any false alarm across all blocks and cells jointly.
+
+### Breaking changes (0.5.0)
+
+- `getModel()`'s `lambda_iq` is renamed **`lambda_iq2`** and is now the
+  **squared** interquantile fusion weight: the rate applied to
+  `|gamma[q] - gamma[q-1]|` is `sqrt(lambda_iq2)`. This matches the existing
+  `lambda_lasso2` / `lambda_beta2` convention. **To reproduce a previous fit,
+  square the old value** -- `lambda_iq = 0.5` becomes `lambda_iq2 = 0.25`
+  (verified bit-identical on the ARCOS fit).
+- `getModel(adaptive_iq = TRUE)` is the **new default**: `lambda_iq2` is learned
+  by an EM recursion run between refits, controlled by `iq_em_max_iter`,
+  `iq_em_tol` and `iq_em_update`. Diagnostics are returned in `fit$iq_em`
+  (including a per-iteration `trace`). Because every EM iteration is a *full
+  refit*, this makes a default `getModel()` call up to `iq_em_max_iter` times
+  more expensive; pass `adaptive_iq = FALSE` for the old single-fit behavior.
+  `iq_em_update = "fixedpoint"` reaches the same limit in far fewer refits.
+  The E-step uses Laplace-approximation draws rather than the exact conditional
+  posterior, so this is an *approximate* empirical-Bayes EM with no
+  monotone-ascent guarantee.
+- The CV helpers (`cv_copss_map`, `cv_copss_grid`, `cv_copss_mcmc`) default
+  `adaptive_iq = FALSE` so a tuning sweep is not silently multiplied by the EM,
+  and they now **error** on an unrecognized tuning name instead of silently
+  dropping it -- a grid still carrying `lambda_iq` would otherwise have tuned
+  nothing while appearing to run.
 
 ### Deprecations (0.4.6)
 

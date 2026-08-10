@@ -27,6 +27,28 @@ pinball_loss <- function(y_val, qhat, taus) {
 }
 
 
+# Tuning grids and base_args are matched to getModel() formals BY NAME, and any
+# name that is not a formal is silently dropped when the argument list is built.
+# That silence is dangerous after a rename: a grid still carrying the old
+# `lambda_iq` column would tune nothing while appearing to run normally. Fail
+# loudly instead, and point at the rename when that is what happened.
+.bqq_check_tuning_names <- function(grid_names, base_names, formal_names) {
+  unknown <- setdiff(c(grid_names, base_names), formal_names)
+  unknown <- unknown[nzchar(unknown)]
+  if (!length(unknown)) return(invisible(TRUE))
+  hint <- ""
+  if ("lambda_iq" %in% unknown) {
+    hint <- paste0(
+      "\n  `lambda_iq` was renamed to `lambda_iq2` and is now the SQUARED weight: ",
+      "the effective fusion rate is sqrt(lambda_iq2).\n  Replace lambda_iq = v with ",
+      "lambda_iq2 = v^2 to reproduce previous results.")
+  }
+  stop("Unknown tuning argument(s) for getModel(): ",
+       paste(sQuote(unknown), collapse = ", "), hint, call. = FALSE)
+}
+
+
+
 #' Order-preserved 2-fold CV for getModel (MAP-only)
 #'
 #' Implements the COPSS-style split (odds vs evens) and evaluates a grid of
@@ -39,6 +61,15 @@ pinball_loss <- function(y_val, qhat, taus) {
 #' @param H,X Design matrices (already aligned with y).
 #' @param w Integer; passed to \code{getModel}.
 #' @param grid_lambda_nc Numeric vector of candidate \code{lambda_nc} (non-crossing penalty).
+#' @param lambda_iq2 Squared IQ fusion weight passed to \code{getModel} (the effective
+#'   rate is its square root). Used as the fixed value when \code{adaptive_iq = FALSE},
+#'   or as the EM starting value when TRUE.
+#' @param adaptive_iq Logical; whether each CV fit learns \eqn{\lambda_{iq}^2} by EM.
+#'   Defaults to FALSE here, unlike \code{getModel}, because every EM iteration is a
+#'   full refit: leaving it on multiplies the cost of the CV sweep by up to
+#'   \code{iq_em_max_iter}. Set TRUE only if the IQ level must be retuned per fold.
+#' @param iq_em_max_iter,iq_em_tol,iq_em_mc_tol,iq_em_update EM controls forwarded to
+#'   \code{getModel}; see there.
 #' @param prior_beta Prior type for betaX (default "normal").
 #' @param prior_gamma Prior type for gamma (default "spike_slab").
 #' @param map_iter Maximum iterations for MAP optimization.
@@ -69,8 +100,16 @@ cv_copss_map <- function(y, taus, H, X = NULL, w,
                             prior_beta = "normal",
                             prior_gamma = "spike_slab",
                             map_iter = 2000,
+                            lambda_iq2 = 1,
+                            adaptive_iq = FALSE,
+                            iq_em_max_iter = 30,
+                            iq_em_tol = 1e-3,
+                            iq_em_mc_tol = 0.02,
+                            iq_em_update = c("em", "fixedpoint"),
                             seed = 123,
                             verbose = TRUE) {
+
+  iq_em_update <- match.arg(iq_em_update)
 
   fit_and_score <- function(idx_train, idx_val, lnc) {
     y_tr <- y[idx_train]
@@ -83,6 +122,12 @@ cv_copss_map <- function(y, taus, H, X = NULL, w,
       getModel(
         y = y_tr, taus = taus, H = H_tr, X = X_tr, w = w,
         lambda_nc = lnc,
+        lambda_iq2 = lambda_iq2,
+        adaptive_iq = adaptive_iq,
+        iq_em_max_iter = iq_em_max_iter,
+        iq_em_tol = iq_em_tol,
+        iq_em_mc_tol = iq_em_mc_tol,
+        iq_em_update = iq_em_update,
         prior_beta = prior_beta,
         prior_gamma = prior_gamma,
         fit_method = "map",
@@ -239,6 +284,7 @@ cv_copss_grid <- function(y, taus, H, X = NULL, w, grid,
 
   # Get getModel formals for default filling
   gm_formals <- as.list(formals(getModel))
+  .bqq_check_tuning_names(names(grid), names(base_args), names(gm_formals))
 
   fit_and_score <- function(idx_train, idx_val, row_args) {
     # Convert factors to character
@@ -260,6 +306,11 @@ cv_copss_grid <- function(y, taus, H, X = NULL, w, grid,
     full_args["map_hessian"] <- list(FALSE)
     full_args["seed"] <- list(seed)
     full_args["verbose"] <- list(FALSE)
+    # getModel() defaults to adaptive_iq = TRUE, but each EM iteration is a FULL
+    # refit; inheriting that here would multiply the cost of the whole CV sweep
+    # by up to iq_em_max_iter. Default it off for tuning. Callers who really want
+    # the IQ level relearned per fold can override via base_args or a grid column.
+    full_args["adaptive_iq"] <- list(FALSE)
 
     # Override with base_args then row_args
     for (nm in names(base_args_l)) full_args[nm] <- list(base_args_l[[nm]])
@@ -416,6 +467,7 @@ cv_copss_mcmc <- function(y, taus, H, X = NULL, w, grid,
 
   # Get getModel formals for default filling
   gm_formals <- as.list(formals(getModel))
+  .bqq_check_tuning_names(names(grid), names(base_args), names(gm_formals))
 
   fit_and_score_mcmc <- function(idx_train, idx_val, row_args) {
     # Convert factors to character
@@ -443,6 +495,11 @@ cv_copss_mcmc <- function(y, taus, H, X = NULL, w, grid,
 
     full_args["seed"] <- list(seed)
     full_args["verbose"] <- list(FALSE)
+    # getModel() defaults to adaptive_iq = TRUE, but each EM iteration is a FULL
+    # refit; inheriting that here would multiply the cost of the whole CV sweep
+    # by up to iq_em_max_iter. Default it off for tuning. Callers who really want
+    # the IQ level relearned per fold can override via base_args or a grid column.
+    full_args["adaptive_iq"] <- list(FALSE)
 
     # Override with base_args then row_args
     for (nm in names(base_args_l)) full_args[nm] <- list(base_args_l[[nm]])

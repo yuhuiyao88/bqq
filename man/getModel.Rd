@@ -19,7 +19,12 @@ getModel(
   beta0_scale = NULL,
   beta_sd = 1,
   lambda_nc = 2,
-  lambda_iq = 1,
+  lambda_iq2 = 1,
+  adaptive_iq = TRUE,
+  iq_em_max_iter = 60,
+  iq_em_tol = 0.001,
+  iq_em_mc_tol = 0.02,
+  iq_em_update = c("em", "fixedpoint"),
   adaptive_beta = TRUE,
   lambda_beta2_a = 1,
   lambda_beta2_b = 0.05,
@@ -117,13 +122,58 @@ prior on the warm-up period with discount \code{a0 = 1/w} (Ibrahim and Chen
 
 \item{lambda_nc}{Positive scalar weight for the non-crossing penalty (larger is stricter).}
 
-\item{lambda_iq}{Non-negative scalar, the interquantile (IQ) shrinkage weight: an
-L1 fusion penalty \eqn{\lambda_{iq}\sum_q |\gamma_q - \gamma_{q-1}|} pulling adjacent
-quantiles' coefficients together (larger = stronger fusion; 0 = none; default 1).
-This is the effective penalty weight directly -- no square. Fixed, not learned: the
-data-adaptive IQ prior was removed because its joint-MAP mode is degenerate
-(collapses to 0) under \code{fit_method = "map"}, unlike the normalized
-scale-mixture priors on the beta/gamma coefficients.}
+\item{lambda_iq2}{Non-negative scalar, the \strong{squared} interquantile (IQ)
+shrinkage weight \eqn{\lambda_{iq}^2}. The penalty applied to the target is
+\eqn{\sqrt{\lambda_{iq}^2}\sum_q |\gamma_q - \gamma_{q-1}|}, i.e. the effective
+L1 fusion rate is the \emph{square root} of this argument. This matches the
+\code{lambda_lasso2} / \code{lambda_beta2} convention, where the stored quantity
+is \eqn{\lambda^2} and the Laplace rate is \eqn{\lambda}. Larger = stronger
+fusion; 0 = none. When \code{adaptive_iq = FALSE} this is the fixed value used;
+when \code{adaptive_iq = TRUE} it is the \emph{starting value} of the EM
+recursion and must be strictly positive (default 1).}
+
+\item{adaptive_iq}{Logical; if TRUE (default), \eqn{\lambda_{iq}^2} is learned from
+  the data by an EM recursion run \emph{between} refits, in the same spirit as
+  \code{adaptive_gamma} / \code{adaptive_beta} learn \eqn{\lambda^2} for the
+  coefficients. If FALSE, the supplied \code{lambda_iq2} is used as a fixed value
+  and the model is fitted once.
+
+  Note that \eqn{\lambda_{iq}^2} cannot be learned \emph{inside} the fit the way
+  the coefficient-side rates are: the fused factor enters the target as a bare
+  penalty without its \eqn{N\log\lambda} normalizer, so its joint-MAP mode is
+  degenerate and collapses to 0 under \code{fit_method = "map"}. The EM route
+  restores the normalizer by working with the marginal likelihood, so it does not
+  suffer that collapse. Each EM iteration is a \strong{full refit}, so
+  \code{adaptive_iq = TRUE} costs up to \code{iq_em_max_iter} times a single fit.}
+
+\item{iq_em_max_iter}{Maximum number of EM iterations (refits) when
+\code{adaptive_iq = TRUE} (default 30).}
+
+\item{iq_em_tol}{Relative-change tolerance on \eqn{\lambda_{iq}^2} for declaring EM
+convergence (default 1e-3).}
+
+\item{iq_em_mc_tol}{Monte-Carlo noise-floor tolerance (default 0.02). The E-step
+estimates \eqn{\bar S} from a finite set of Laplace draws, so
+\eqn{\lambda_{iq}^2} cannot settle more tightly than the sampling noise in
+\eqn{\bar S}: past that point successive updates simply bounce up and down about
+the fixed point instead of shrinking. When the update has changed direction on
+two consecutive iterations and every relative move involved is below
+\code{iq_em_mc_tol}, the recursion is declared converged \emph{at the Monte-Carlo
+floor} and stops, rather than burning the remaining refits chasing a tolerance
+the E-step cannot deliver. This is recorded in \code{iq_em$note} and
+\code{iq_em$stop_reason}. Tighten the floor by raising
+\code{laplace_n_samples}, not by lowering \code{iq_em_tol}. Set to 0 to disable.}
+
+\item{iq_em_update}{Which recursion to iterate. \code{"em"} (default) is the EM
+update
+\eqn{\lambda^{2}_{(s+1)} = 2N\lambda^{2}_{(s)}/(\lambda_{(s)}\bar S + N)};
+\code{"fixedpoint"} jumps directly to its fixed point \eqn{(N/\bar S)^2}. Both
+share the same limit, and \code{"fixedpoint"} typically needs far fewer refits,
+but it is not the EM iteration. Here \eqn{N} is the number of penalized adjacent
+-quantile differences and \eqn{\bar S} is the posterior mean of the normalized
+penalty. Because the E-step uses draws from a Laplace approximation rather than
+the exact conditional posterior, this is an \emph{approximate} empirical-Bayes EM
+and carries no monotone-ascent guarantee.}
 
 \item{adaptive_beta}{Logical; if TRUE (default), the beta-side shrinkage level
 \eqn{\lambda_\beta^2} is learned from data for LASSO-type priors. If FALSE,
@@ -253,6 +303,15 @@ A list with components:
     \item hessian: Hessian at MAP (if computed)
     \item fit_method: The estimation method used
     \item laplace_samples: Pre-generated Laplacian samples (if fit_method = "map")
+    \item stan_data: The data list passed to Stan. Its \code{lambda_iq2} entry is
+      the value the returned fit was actually computed at.
+    \item iq_em: Diagnostics for the \eqn{\lambda_{iq}^2} EM: \code{adaptive},
+      \code{update}, \code{n_diff} (the number of penalized differences \eqn{N}),
+      \code{lambda_iq2} (final, matching the returned fit), \code{lambda_iq2_next}
+      (the update the last iteration proposed), \code{Sbar}, \code{converged},
+      \code{n_iter}, \code{note}, and \code{trace} -- a data frame with one row per
+      EM iteration recording \code{lambda_iq2}, \code{lambda_iq}, \code{Sbar},
+      \code{lambda_iq2_next} and \code{rel_change}.
   }
 }
 \description{

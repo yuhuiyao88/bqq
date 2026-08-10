@@ -48,10 +48,35 @@ for backward compatibility when \code{fit_result$laplace_samples} is absent
 this is the nominal false alarm probability FAP0 of the manuscript.}
 
 \item{basis}{Character vector selecting which test family/families to compute:
-\code{"quantile"} (the raw quantile block-gammas) and/or \code{"qss"} (the four
-shape contrasts derived from those quantiles). Default is both; \code{"both"} is
-also accepted. The QSS family is simply the quantile family rotated into an
-interpretable, moment-aligned basis (L, S, Sk, K).}
+  \code{"quantile"} (the raw quantile block-gammas), \code{"qss"}, \code{"lmom"},
+  or \code{"maxent"}. Default is \code{c("quantile", "qss")}; \code{"both"} is
+  accepted for those two and \code{"all"} selects all four.
+
+  The last three are all the quantile family rotated into an interpretable,
+  moment-aligned basis, and all three use the same four cells and the identical
+  downstream machinery (whitening, UI / Hotelling T-squared, the
+  raw/Holm/Bonferroni/BH/calibrated family, cell localization). Only the 4 x m
+  contrast matrix differs, so any difference between them is attributable to the
+  weights alone:
+  \itemize{
+    \item \code{"qss"} -- median, IQR, Bowley numerator, tail excess
+      (\code{LS, ScS, SkS, KS}); exactly location-free by construction.
+    \item \code{"lmom"} -- shifted-Legendre L-moment contrasts evaluated by
+      trapezoid quadrature on the fitted grid. Because the grid truncates
+      \eqn{[0,1]} to \eqn{[\tau_1, \tau_m]}, the Legendre orthogonality that makes
+      the shape contrasts location-free fails; each shape row is therefore
+      projected off the L-location row to restore exact location invariance. That
+      correction is not cosmetic -- uncorrected, a pure location shift leaks about
+      -4.9\% into L-skewness.
+    \item \code{"maxent"} -- gradients of the mean / sd / standardized skewness /
+      standardized kurtosis of the maximum-entropy density consistent with the
+      fitted quantiles (piecewise uniform between knots, exponential tails pinned
+      by continuity). Location and scale invariance are \emph{inherited} from the
+      standardized moment definitions rather than imposed, and are verified
+      numerically; the weights are evaluated at a standard normal baseline.
+  }
+  Requires at least four quantile levels (\code{"qss"} requires the five-level
+  grid); a family that cannot be formed is skipped with a warning.}
 
 \item{statistic}{Character vector selecting how a block's cells are combined into a
 block-level test. Both are built from the same posterior-whitened cell z-scores

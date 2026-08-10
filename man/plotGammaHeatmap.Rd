@@ -14,6 +14,7 @@ plotGammaHeatmap(
   cell_color = "black",
   pos_color = NULL,
   neg_color = NULL,
+  z_limit = 3,
   xlab = "block",
   ylab = NULL
 )
@@ -41,15 +42,26 @@ Section 3.2: it runs only inside blocks that have already signaled, so it
 localizes a detected shift rather than adding a new family of tests, and the
 false alarm probability remains that of the block-level rule.}
 
-\item{block_color}{Border colour for cells of a OOC block (default grey).}
+\item{block_color}{Border color for cells of a OOC block (default grey).}
 
-\item{cell_color}{Border colour for the localized cells within a OOC block
+\item{cell_color}{Border color for the localized cells within a OOC block
 (default black).}
 
-\item{pos_color, neg_color}{End colours of the diverging fill: positive
+\item{pos_color, neg_color}{End colors of the diverging fill: positive
 \eqn{\tilde z} and negative \eqn{\tilde z} respectively, white at zero.
 Defaults are a muted, lightness-matched Morandi-style red and blue. There is
 no canonical hex for those, so pass your own values to match a house palette.}
+
+\item{z_limit}{Positive scalar fixing the diverging fill scale to
+\code{c(-z_limit, z_limit)} whenever the fill is on a z scale -- the whitened
+\eqn{\tilde z} cells, or the studentized \code{z} fallback (default 3). A FIXED
+scale is the point: with a data-driven limit the same color means a different
+number in every figure, so two fits cannot be compared by eye. Cells beyond the
+limit are clipped to the end color (not dropped), and the subtitle records that
+clipping occurred and how far out the extreme cell was. Set \code{NULL} to
+restore the old data-driven symmetric limit. Ignored when the fill is the raw
+posterior-mean \eqn{\gamma}, where a fixed \eqn{\pm 3} would be meaningless --
+those panels always use a data-driven limit.}
 
 \item{xlab}{Label for the x axis (default \code{"block"}).}
 

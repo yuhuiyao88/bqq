@@ -3,6 +3,108 @@
 # Compiling once per R session avoids redundant 30-60s compilations.
 .bqq_stan_cache <- new.env(parent = emptyenv())
 
+
+# ====================================================================
+# EM for the squared interquantile penalty weight, lambda_iq2
+# ====================================================================
+# Derivation: bqq/simulation_study/lmom_3cfg/EM_FOR_LAMBDA_IQ_math.md
+#
+# The Stan model subtracts  lambda * P  from the target, where
+# lambda = sqrt(lambda_iq2) and P = pen_iq_total is the NORMALIZED weighted
+# penalty actually accumulated in the model block:
+#
+#   P = (1/n_comp) * [ (1/(r(m-1))) sum_{j,q} w^g_{q-1,j} |gamma[q,j]-gamma[q-1,j]|
+#                    + (1/(p_s(m-1))) sum_{j,q} w^b_{q-1,j} |beta[q,j+1]-beta[q-1,j+1]| ]
+#
+# Writing the contribution as -lambda * sum_k c_k |d_k| over the N differences,
+# the Laplace rate of difference k is a_k = lambda * c_k. Reading the fused factor
+# as a Laplace prior on the differences and applying the Gaussian scale-mixture
+# augmentation d_k | t_k ~ N(0, t_k), t_k | lambda ~ Exp(a_k^2 / 2) gives the M-step
+#
+#   lambda^2 = 2N / sum_k c_k^2 E[t_k],     E[t_k] = E|d_k| / a_k + 1 / a_k^2
+#
+# and, since sum_k c_k^2 E[t_k] = Sbar / lambda^(s) + N / (lambda^(s))^2 with
+# Sbar := sum_k c_k E|d_k| = E[P], the closed-form recursion on the SQUARED scale:
+#
+#   lambda_iq2^(s+1) = 2 N lambda_iq2^(s) / ( sqrt(lambda_iq2^(s)) * Sbar + N )
+#
+# whose fixed point is lambda* = N / Sbar, i.e. lambda_iq2* = (N / Sbar)^2.
+#
+# Sbar is therefore just the posterior mean of the very quantity the Stan model
+# computes, which is what .bqq_iq_Sbar() evaluates from the draws.
+#
+# IMPORTANT (see EM_FOR_LAMBDA_IQ_math.md sections 4 and 7): the scale-mixture
+# augmentation is exact, but this E-step uses a Laplace approximation to
+# p(gamma | y, lambda), not the exact conditional. The procedure is therefore an
+# APPROXIMATE empirical-Bayes EM and carries no monotone-ascent guarantee.
+
+# Number of penalized adjacent-quantile differences (the N above).
+.bqq_iq_n_diff <- function(r, p_slope, m) {
+  if (m < 2L) return(0L)
+  as.integer((if (r > 0) r * (m - 1L) else 0L) +
+             (if (p_slope > 0) p_slope * (m - 1L) else 0L))
+}
+
+# Posterior mean of pen_iq_total, i.e. Sbar = sum_k c_k E|d_k|.
+# draws$gamma is [S, m, r]; draws$beta is [S, m, p_total] with column 1 the
+# intercept, which is NOT penalized (mirrors the Stan model block exactly).
+.bqq_iq_Sbar <- function(draws, w_iq_gamma, w_iq_beta, r, p_slope, m) {
+  if (m < 2L) return(NA_real_)
+  qs <- 2:m
+  qm <- 1:(m - 1L)
+  total <- 0
+  n_comp <- 0L
+
+  if (r > 0 && !is.null(draws$gamma)) {
+    g <- draws$gamma
+    dg <- abs(g[, qs, , drop = FALSE] - g[, qm, , drop = FALSE])   # [S, m-1, r]
+    Ed <- apply(dg, c(2, 3), mean)                                  # [m-1, r]
+    total <- total + sum(w_iq_gamma * Ed) / (r * (m - 1L))
+    n_comp <- n_comp + 1L
+  }
+
+  if (p_slope > 0 && !is.null(draws$beta)) {
+    b <- draws$beta[, , 2:(p_slope + 1L), drop = FALSE]             # drop intercept
+    db <- abs(b[, qs, , drop = FALSE] - b[, qm, , drop = FALSE])
+    Ed <- apply(db, c(2, 3), mean)
+    total <- total + sum(w_iq_beta * Ed) / (p_slope * (m - 1L))
+    n_comp <- n_comp + 1L
+  }
+
+  if (n_comp == 0L) return(NA_real_)
+  total / n_comp
+}
+
+# One update of lambda_iq2.
+#   "em"         : the EM recursion above (monotone in theory for an exact E-step).
+#   "fixedpoint" : jump straight to the fixed point (N/Sbar)^2. Same limit, far
+#                  fewer refits, but it is NOT the EM iteration.
+.bqq_iq_em_step <- function(lambda_iq2, Sbar, N, update = c("em", "fixedpoint")) {
+  update <- match.arg(update)
+  if (!is.finite(Sbar) || !is.finite(lambda_iq2) || N <= 0) return(NA_real_)
+  if (Sbar <= 0) return(NA_real_)          # no fusion signal; caller keeps current value
+  if (update == "fixedpoint") return((N / Sbar)^2)
+  lam <- sqrt(lambda_iq2)
+  denom <- lam * Sbar + N
+  if (!is.finite(denom) || denom <= 0) return(NA_real_)
+  2 * N * lambda_iq2 / denom
+}
+
+# Posterior draws of beta/gamma from whichever machinery the fit_method used.
+# Laplace draws (fit_method = "map") and MCMC draws share the [S, m, .] layout.
+.bqq_iq_draws <- function(res) {
+  ls <- res$laplace_samples
+  if (!is.null(ls) && (!is.null(ls$gamma) || !is.null(ls$beta))) {
+    return(list(beta = ls$beta, gamma = ls$gamma))
+  }
+  if (!is.null(res$fit)) {
+    d <- tryCatch(rstan::extract(res$fit, pars = c("beta", "gamma")),
+                  error = function(e) NULL)
+    if (!is.null(d)) return(list(beta = d$beta, gamma = d$gamma))
+  }
+  NULL
+}
+
 #' Smoothed Quantile Regression with Interquantile Shrinkage (Stan)
 #'
 #' Fits a multi-quantile (\eqn{m}) regression model where the conditional
@@ -84,13 +186,53 @@
 #' @param beta_sd Positive scalar prior std dev for \code{betaX} coefficients under
 #'   \code{prior_beta = "normal"} (default 1.0).
 #' @param lambda_nc Positive scalar weight for the non-crossing penalty (larger is stricter).
-#' @param lambda_iq Non-negative scalar, the interquantile (IQ) shrinkage weight: an
-#'   L1 fusion penalty \eqn{\lambda_{iq}\sum_q |\gamma_q - \gamma_{q-1}|} pulling adjacent
-#'   quantiles' coefficients together (larger = stronger fusion; 0 = none; default 1).
-#'   This is the effective penalty weight directly -- no square. Fixed, not learned: the
-#'   data-adaptive IQ prior was removed because its joint-MAP mode is degenerate
-#'   (collapses to 0) under \code{fit_method = "map"}, unlike the normalized
-#'   scale-mixture priors on the beta/gamma coefficients.
+#' @param lambda_iq2 Non-negative scalar, the \strong{squared} interquantile (IQ)
+#'   shrinkage weight \eqn{\lambda_{iq}^2}. The penalty applied to the target is
+#'   \eqn{\sqrt{\lambda_{iq}^2}\sum_q |\gamma_q - \gamma_{q-1}|}, i.e. the effective
+#'   L1 fusion rate is the \emph{square root} of this argument. This matches the
+#'   \code{lambda_lasso2} / \code{lambda_beta2} convention, where the stored quantity
+#'   is \eqn{\lambda^2} and the Laplace rate is \eqn{\lambda}. Larger = stronger
+#'   fusion; 0 = none. When \code{adaptive_iq = FALSE} this is the fixed value used;
+#'   when \code{adaptive_iq = TRUE} it is the \emph{starting value} of the EM
+#'   recursion and must be strictly positive (default 1).
+#' @param adaptive_iq Logical; if TRUE (default), \eqn{\lambda_{iq}^2} is learned from
+#'   the data by an EM recursion run \emph{between} refits, in the same spirit as
+#'   \code{adaptive_gamma} / \code{adaptive_beta} learn \eqn{\lambda^2} for the
+#'   coefficients. If FALSE, the supplied \code{lambda_iq2} is used as a fixed value
+#'   and the model is fitted once.
+#'
+#'   Note that \eqn{\lambda_{iq}^2} cannot be learned \emph{inside} the fit the way
+#'   the coefficient-side rates are: the fused factor enters the target as a bare
+#'   penalty without its \eqn{N\log\lambda} normalizer, so its joint-MAP mode is
+#'   degenerate and collapses to 0 under \code{fit_method = "map"}. The EM route
+#'   restores the normalizer by working with the marginal likelihood, so it does not
+#'   suffer that collapse. Each EM iteration is a \strong{full refit}, so
+#'   \code{adaptive_iq = TRUE} costs up to \code{iq_em_max_iter} times a single fit.
+#' @param iq_em_max_iter Maximum number of EM iterations (refits) when
+#'   \code{adaptive_iq = TRUE} (default 30).
+#' @param iq_em_tol Relative-change tolerance on \eqn{\lambda_{iq}^2} for declaring EM
+#'   convergence (default 1e-3).
+#' @param iq_em_mc_tol Monte-Carlo noise-floor tolerance (default 0.02). The E-step
+#'   estimates \eqn{\bar S} from a finite set of Laplace draws, so
+#'   \eqn{\lambda_{iq}^2} cannot settle more tightly than the sampling noise in
+#'   \eqn{\bar S}: past that point successive updates simply bounce up and down about
+#'   the fixed point instead of shrinking. When the update has changed direction on
+#'   two consecutive iterations and every relative move involved is below
+#'   \code{iq_em_mc_tol}, the recursion is declared converged \emph{at the Monte-Carlo
+#'   floor} and stops, rather than burning the remaining refits chasing a tolerance
+#'   the E-step cannot deliver. This is recorded in \code{iq_em$note} and
+#'   \code{iq_em$stop_reason}. Tighten the floor by raising
+#'   \code{laplace_n_samples}, not by lowering \code{iq_em_tol}. Set to 0 to disable.
+#' @param iq_em_update Which recursion to iterate. \code{"em"} (default) is the EM
+#'   update
+#'   \eqn{\lambda^{2}_{(s+1)} = 2N\lambda^{2}_{(s)}/(\lambda_{(s)}\bar S + N)};
+#'   \code{"fixedpoint"} jumps directly to its fixed point \eqn{(N/\bar S)^2}. Both
+#'   share the same limit, and \code{"fixedpoint"} typically needs far fewer refits,
+#'   but it is not the EM iteration. Here \eqn{N} is the number of penalized adjacent
+#'   -quantile differences and \eqn{\bar S} is the posterior mean of the normalized
+#'   penalty. Because the E-step uses draws from a Laplace approximation rather than
+#'   the exact conditional posterior, this is an \emph{approximate} empirical-Bayes EM
+#'   and carries no monotone-ascent guarantee.
 #' @param adaptive_beta Logical; if TRUE (default), the beta-side shrinkage level
 #'   \eqn{\lambda_\beta^2} is learned from data for LASSO-type priors. If FALSE,
 #'   \code{lambda_beta2_fixed} is used.
@@ -194,6 +336,15 @@
 #'     \item hessian: Hessian at MAP (if computed)
 #'     \item fit_method: The estimation method used
 #'     \item laplace_samples: Pre-generated Laplacian samples (if fit_method = "map")
+#'     \item stan_data: The data list passed to Stan. Its \code{lambda_iq2} entry is
+#'       the value the returned fit was actually computed at.
+#'     \item iq_em: Diagnostics for the \eqn{\lambda_{iq}^2} EM: \code{adaptive},
+#'       \code{update}, \code{n_diff} (the number of penalized differences \eqn{N}),
+#'       \code{lambda_iq2} (final, matching the returned fit), \code{lambda_iq2_next}
+#'       (the update the last iteration proposed), \code{Sbar}, \code{converged},
+#'       \code{n_iter}, \code{note}, and \code{trace} -- a data frame with one row per
+#'       EM iteration recording \code{lambda_iq2}, \code{lambda_iq}, \code{Sbar},
+#'       \code{lambda_iq2_next} and \code{rel_change}.
 #'   }
 #'
 #' @references
@@ -226,7 +377,12 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
                         base_scale = NULL, beta0_loc = NULL, beta0_scale = NULL,
                         beta_sd = 1.0,
                         lambda_nc = 2,
-                        lambda_iq = 1,
+                        lambda_iq2 = 1,
+                        adaptive_iq = TRUE,
+                        iq_em_max_iter = 60,
+                        iq_em_tol = 1e-3,
+                        iq_em_mc_tol = 0.02,
+                        iq_em_update = c("em", "fixedpoint"),
                         adaptive_beta = TRUE,
                         lambda_beta2_a = 1, lambda_beta2_b = 0.05,
                         lambda_beta2_fixed = 1,
@@ -257,10 +413,20 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
                         spike_sd = 0.05, slab_sd = 2.0,
                         slab_pi_a = 1, slab_pi_b = 1) {
 
-  prior_beta  <- match.arg(prior_beta)
-  prior_gamma <- match.arg(prior_gamma)
-  fit_method  <- match.arg(fit_method)
-  map_init    <- match.arg(map_init)
+  prior_beta   <- match.arg(prior_beta)
+  prior_gamma  <- match.arg(prior_gamma)
+  fit_method   <- match.arg(fit_method)
+  map_init     <- match.arg(map_init)
+  iq_em_update <- match.arg(iq_em_update)
+
+  if (!is.numeric(lambda_iq2) || length(lambda_iq2) != 1L ||
+      is.na(lambda_iq2) || lambda_iq2 < 0) {
+    stop("lambda_iq2 must be a single non-negative scalar (it is lambda^2, not lambda).")
+  }
+  if (isTRUE(adaptive_iq) && lambda_iq2 <= 0) {
+    stop("lambda_iq2 must be > 0 when adaptive_iq = TRUE: it is the EM starting value, ",
+         "and the recursion has an absorbing fixed point at 0.")
+  }
   prior_beta_code <- switch(
     prior_beta,
     normal            = 1L,
@@ -340,8 +506,12 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
 
       real<lower=0> lambda_nc;         // non-crossing penalty weight
 
-      // Interquantile (fused lasso) shrinkage: fixed effective penalty weight
-      real<lower=0> lambda_iq;         // L1 fusion weight on adjacent-quantile differences
+      // Interquantile (fused lasso) shrinkage: SQUARED penalty weight.
+      // Convention matches lambda_lasso2 / lambda_beta2: the stored quantity is
+      // lambda^2 and the Laplace rate applied to |gamma[q]-gamma[q-1]| is its
+      // square root. Held fixed within a fit; when adaptive_iq = 1 the value is
+      // updated between fits by the EM recursion in getModel() (see .bqq_iq_em_step).
+      real<lower=0> lambda_iq2;        // SQUARED L1 fusion weight on adjacent-quantile differences
 
       real<lower=0> lambda_lasso2_a;
       real<lower=0> lambda_lasso2_b;
@@ -736,8 +906,10 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
       // Penalizes |coef[q] - coef[q-1]| with IQ weights (more shrinkage at outer quantiles)
       // Applied to gamma and betaX slopes (NOT the intercept beta0)
       {
-        // Fixed effective IQ penalty weight (user-supplied; no adaptive rate, no square)
-        real lambda_iq_eff = lambda_iq;
+        // Effective IQ penalty weight is the SQUARE ROOT of lambda_iq2, mirroring
+        // the lambda_lasso2 convention where the stored quantity is lambda^2 and
+        // the Laplace rate is lambda. Fixed within a fit; updated across fits by EM.
+        real lambda_iq_eff = sqrt(lambda_iq2);
 
         if (lambda_iq_eff > 0) {
           real pen_iq_gamma = 0;
@@ -942,7 +1114,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
     beta0_loc = beta0_loc, beta0_scale = beta0_scale,
     base_scale = base_scale, c_sigma = c_sigma, beta_sd = beta_sd,
     lambda_nc = lambda_nc,
-    lambda_iq = lambda_iq,                        # fixed effective IQ fusion weight
+    lambda_iq2 = lambda_iq2,                      # SQUARED IQ fusion weight (rate = sqrt)
     lambda_beta2_a = lambda_beta2_a, lambda_beta2_b = lambda_beta2_b,
     adaptive_beta = as.integer(adaptive_beta),
     lambda_beta2_fixed = lambda_beta2_fixed,
@@ -1308,6 +1480,18 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
   }
 
   # ------------------------------------------------------------------
+  # One complete fit at a given stan_data -- in particular, at a given
+  # lambda_iq2. Factored out so the EM recursion below can call it
+  # repeatedly. EM sits OUTSIDE the fit: it updates lambda_iq2 between
+  # refits and touches no Stan code.
+  # ------------------------------------------------------------------
+  run_one_fit <- function(stan_data) {
+    fit <- NULL
+    map_fit <- NULL
+    hessian <- NULL
+    laplace_samples <- NULL
+
+  # ------------------------------------------------------------------
   # fit_method = "mcmc": MCMC only, estimators are posterior median
   # ------------------------------------------------------------------
   if (fit_method == "mcmc") {
@@ -1397,6 +1581,137 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
     )
   }
 
+    list(fit = fit, map = map_fit, hessian = hessian,
+         laplace_samples = laplace_samples)
+  }
+
+  # ------------------------------------------------------------------
+  # lambda_iq2: EM across refits, or a single fit at the supplied value
+  # ------------------------------------------------------------------
+  n_iq_diff <- .bqq_iq_n_diff(r, p_slope, m)
+  iq_em <- list(
+    adaptive        = isTRUE(adaptive_iq),
+    update          = iq_em_update,
+    n_diff          = n_iq_diff,
+    lambda_iq2      = lambda_iq2,
+    lambda_iq2_next = NA_real_,
+    Sbar            = NA_real_,
+    converged       = NA,
+    stop_reason     = NA_character_,
+    n_iter          = 0L,
+    trace           = NULL,
+    note            = NULL
+  )
+
+  if (isTRUE(adaptive_iq) && n_iq_diff > 0L) {
+    cur <- lambda_iq2
+    lam_used <- cur
+    nxt <- NA_real_
+    Sbar <- NA_real_
+    converged <- FALSE
+    tr <- NULL
+    res <- NULL
+    # Monte-Carlo floor detection: once the E-step noise dominates, the updates
+    # alternate direction about the fixed point instead of shrinking.
+    prev_sign <- NA_integer_
+    flips <- 0L
+    recent_rel <- numeric(0)
+    stop_reason <- "max_iter"
+
+    for (s in seq_len(iq_em_max_iter)) {
+      stan_data$lambda_iq2 <- cur
+      res <- run_one_fit(stan_data)
+      lam_used <- cur
+
+      draws <- .bqq_iq_draws(res)
+      Sbar <- if (is.null(draws)) NA_real_ else
+        .bqq_iq_Sbar(draws, w_iq_gamma, w_iq_beta, r, p_slope, m)
+      nxt <- .bqq_iq_em_step(cur, Sbar, n_iq_diff, iq_em_update)
+      rel <- if (is.finite(nxt)) abs(nxt - cur) / max(cur, .Machine$double.eps) else NA_real_
+
+      tr <- rbind(tr, data.frame(
+        iter = s, lambda_iq2 = lam_used, lambda_iq = sqrt(lam_used),
+        Sbar = Sbar, lambda_iq2_next = nxt, rel_change = rel
+      ))
+      if (verbose) {
+        message(sprintf("[iq-EM %02d] lambda_iq2 = %.6g  (lambda = %.6g)  Sbar = %.6g  -> %.6g",
+                        s, lam_used, sqrt(lam_used), Sbar, nxt))
+      }
+
+      if (!is.finite(nxt)) {
+        stop_reason <- "no_usable_update"
+        iq_em$note <- sprintf(
+          "EM halted at iteration %d: Sbar = %s produced no usable update; keeping lambda_iq2 = %.6g.",
+          s, format(Sbar), lam_used)
+        break
+      }
+      if (is.finite(rel) && rel < iq_em_tol) {
+        converged <- TRUE
+        stop_reason <- "tol"
+        break
+      }
+
+      # Monte-Carlo floor: direction reversals with only small moves mean the
+      # E-step noise, not the recursion, is now driving lambda_iq2.
+      sgn <- sign(nxt - cur)
+      if (!is.na(prev_sign) && sgn != 0L && sgn == -prev_sign) flips <- flips + 1L
+      else if (sgn != 0L) flips <- 0L
+      if (sgn != 0L) prev_sign <- sgn
+      recent_rel <- c(recent_rel, rel)
+      if (length(recent_rel) > 3L) recent_rel <- recent_rel[-1L]
+      if (iq_em_mc_tol > 0 && flips >= 2L && length(recent_rel) >= 3L &&
+          all(is.finite(recent_rel)) && max(recent_rel) < iq_em_mc_tol) {
+        converged <- TRUE
+        stop_reason <- "mc_floor"
+        iq_em$note <- sprintf(
+          paste0("Stopped at the Monte-Carlo floor after %d iterations: lambda_iq2 is oscillating ",
+                 "about its fixed point by at most %.2g (relative), which is E-step sampling noise ",
+                 "from laplace_n_samples = %d, not a failure to converge. iq_em_tol = %g is below ",
+                 "that floor and cannot be met. Raise laplace_n_samples to tighten it."),
+          s, max(recent_rel), laplace_n_samples, iq_em_tol)
+        break
+      }
+      cur <- nxt
+    }
+
+    # The returned fit is the one actually computed at lam_used, so the model
+    # and the reported lambda_iq2 are self-consistent; no extra refit is done.
+    stan_data$lambda_iq2 <- lam_used
+    fit             <- res$fit
+    map_fit         <- res$map
+    hessian         <- res$hessian
+    laplace_samples <- res$laplace_samples
+
+    iq_em$lambda_iq2      <- lam_used
+    iq_em$lambda_iq2_next <- nxt
+    iq_em$Sbar            <- Sbar
+    iq_em$converged       <- converged
+    iq_em$stop_reason     <- stop_reason
+    iq_em$n_iter          <- if (is.null(tr)) 0L else nrow(tr)
+    iq_em$trace           <- tr
+
+    if (!converged && is.null(iq_em$note)) {
+      iq_em$note <- sprintf(
+        paste0("EM did not meet iq_em_tol = %g within iq_em_max_iter = %d (last relative change ",
+               "%.3g). Reported lambda_iq2 is the last fitted value. If the trace is oscillating ",
+               "rather than drifting, this is E-step Monte-Carlo noise: raise laplace_n_samples ",
+               "(currently %d) or iq_em_mc_tol."),
+        iq_em_tol, iq_em_max_iter, tr$rel_change[nrow(tr)], laplace_n_samples)
+      warning(iq_em$note, call. = FALSE)
+    }
+
+  } else {
+    if (isTRUE(adaptive_iq) && n_iq_diff == 0L) {
+      iq_em$adaptive <- FALSE
+      iq_em$note <- "adaptive_iq = TRUE ignored: there are no penalized adjacent-quantile differences (need m >= 2 and r > 0 or p_slope > 0)."
+    }
+    res <- run_one_fit(stan_data)
+    fit             <- res$fit
+    map_fit         <- res$map
+    hessian         <- res$hessian
+    laplace_samples <- res$laplace_samples
+  }
+
   list(
     fit = fit,
     map = map_fit,
@@ -1404,6 +1719,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
     hessian = hessian,
     fit_method = fit_method,
     laplace_samples = laplace_samples,
-    stan_data = stan_data
+    stan_data = stan_data,
+    iq_em = iq_em
   )
 }
