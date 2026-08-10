@@ -147,7 +147,9 @@ recursion and must be strictly positive (default 1).}
   \code{adaptive_iq = TRUE} costs up to \code{iq_em_max_iter} times a single fit.}
 
 \item{iq_em_max_iter}{Maximum number of EM iterations (refits) when
-\code{adaptive_iq = TRUE} (default 30).}
+\code{adaptive_iq = TRUE} (default 60). With the default
+\code{iq_em_update = "em"} a converging run typically needs 25-45 of these, so
+a default \code{getModel()} call can cost that many full refits.}
 
 \item{iq_em_tol}{Relative-change tolerance on \eqn{\lambda_{iq}^2} for declaring EM
 convergence (default 1e-3).}
