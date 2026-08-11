@@ -24,7 +24,6 @@ getModel(
   iq_em_max_iter = 60,
   iq_em_tol = 0.001,
   iq_em_mc_tol = 0.02,
-  iq_em_update = c("em", "fixedpoint"),
   adaptive_beta = TRUE,
   lambda_beta2_a = 1,
   lambda_beta2_b = 0.05,
@@ -57,11 +56,11 @@ getModel(
     "adaptive_lasso"),
   prior_gamma = c("spike_slab", "group_lasso", "lasso", "het_group_lasso",
     "adaptive_lasso", "spike_slab_lasso"),
-  beta_spike_sd = 0.05,
+  beta_spike_sd = 0.1,
   beta_slab_sd = 2,
   beta_slab_pi_a = 1,
   beta_slab_pi_b = 1,
-  spike_sd = 0.05,
+  spike_sd = 0.1,
   slab_sd = 2,
   slab_pi_a = 1,
   slab_pi_b = 1
@@ -147,9 +146,10 @@ recursion and must be strictly positive (default 1).}
   \code{adaptive_iq = TRUE} costs up to \code{iq_em_max_iter} times a single fit.}
 
 \item{iq_em_max_iter}{Maximum number of EM iterations (refits) when
-\code{adaptive_iq = TRUE} (default 60). With the default
-\code{iq_em_update = "em"} a converging run typically needs 25-45 of these, so
-a default \code{getModel()} call can cost that many full refits.}
+\code{adaptive_iq = TRUE} (default 60). Since 0.5.2 the M-step jumps straight
+to its fixed point, so a converging run typically needs only a handful of
+refits; the outer loop still iterates because \eqn{\bar S} is recomputed from
+a refit at the updated \eqn{\lambda}.}
 
 \item{iq_em_tol}{Relative-change tolerance on \eqn{\lambda_{iq}^2} for declaring EM
 convergence (default 1e-3).}
@@ -165,17 +165,6 @@ floor} and stops, rather than burning the remaining refits chasing a tolerance
 the E-step cannot deliver. This is recorded in \code{iq_em$note} and
 \code{iq_em$stop_reason}. Tighten the floor by raising
 \code{laplace_n_samples}, not by lowering \code{iq_em_tol}. Set to 0 to disable.}
-
-\item{iq_em_update}{Which recursion to iterate. \code{"em"} (default) is the EM
-update
-\eqn{\lambda^{2}_{(s+1)} = 2N\lambda^{2}_{(s)}/(\lambda_{(s)}\bar S + N)};
-\code{"fixedpoint"} jumps directly to its fixed point \eqn{(N/\bar S)^2}. Both
-share the same limit, and \code{"fixedpoint"} typically needs far fewer refits,
-but it is not the EM iteration. Here \eqn{N} is the number of penalized adjacent
--quantile differences and \eqn{\bar S} is the posterior mean of the normalized
-penalty. Because the E-step uses draws from a Laplace approximation rather than
-the exact conditional posterior, this is an \emph{approximate} empirical-Bayes EM
-and carries no monotone-ascent guarantee.}
 
 \item{adaptive_beta}{Logical; if TRUE (default), the beta-side shrinkage level
 \eqn{\lambda_\beta^2} is learned from data for LASSO-type priors. If FALSE,
@@ -292,9 +281,27 @@ coefficient-level local scales, without pilot weights.}
 hyperparameters for \code{betaX}.}
 
 \item{spike_sd, slab_sd, slab_pi_a, slab_pi_b}{Spike-and-slab hyperparameters.
-NOTE: \code{spike_sd}/\code{slab_sd} are STANDARD DEVIATIONS; the
-manuscript's spike-and-slab specification is written in variances
-(variance = sd^2).}
+  NOTE: \code{spike_sd}/\code{slab_sd} are STANDARD DEVIATIONS; the
+  manuscript's spike-and-slab specification is written in variances
+  (variance = sd^2).
+
+  \code{spike_sd} defaults to \strong{0.1} (raised from 0.05 in 0.5.2). A
+  narrower spike makes the null mixture component close to a point mass, so
+  any noise-driven \code{gamma} is pushed into the slab and flagged. In the
+  lmom_3cfg simulation this dominated the false-alarm rate: on the null arm,
+  \code{spike_sd <= 0.05} flagged 71 of 155 replications (0.458) against 1 of
+  85 (0.012) for \code{spike_sd >= 0.10} -- Fisher exact p = 6.5e-16, odds
+  ratio 70. Values below 0.1 are still accepted but will inflate the
+  false-alarm rate of \code{prior_gamma = "spike_slab"} and
+  \code{"spike_slab_lasso"}; the effect is not removable by any multiplicity
+  correction, since those detections survive Bonferroni, Holm, BH and the
+  calibrated constant identically.
+
+  \code{beta_spike_sd} was raised to 0.1 alongside it, for consistency of the
+  spike width across the two coefficient blocks. Note the direct evidence
+  above concerns \code{spike_sd} only: it governs the block coefficients that
+  drive detection, whereas \code{beta_spike_sd} governs \code{betaX}, and no
+  equivalent false-alarm study was run for the covariate side.}
 }
 \value{
 A list with components:

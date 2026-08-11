@@ -201,6 +201,26 @@ the full across-block family — raw, Holm, Bonferroni, BH, and the **calibrated
 single-step rule using analytic charting constants (Šidák-type) that control the
 probability of any false alarm across all blocks and cells jointly.
 
+### Wider spike defaults (0.5.2)
+
+- `getModel()`'s `spike_sd` and `beta_spike_sd` both default to **0.1**, raised from
+  0.05. A narrower spike makes the null mixture component close to a point mass, so
+  any noise-driven coefficient is pushed into the slab and flagged.
+- The evidence is from the `lmom_3cfg` simulation, null arm, pooled over three
+  settings and both spike priors: `spike_sd <= 0.05` flagged **71 of 155**
+  replications (0.458) against **1 of 85** (0.012) for `spike_sd >= 0.10` — Fisher
+  exact p = 6.5e-16, odds ratio 70 (95% CI 12–2833). It also accounts for
+  `spike_slab_lasso`'s 0.526 false-alarm rate, which is not a distinct failure: that
+  prior simply lands on a tight spike far more often (553/598 fits vs 190/598).
+- **No multiplicity correction repairs this.** Size is identical at `raw`, `bonf`,
+  `holm`, `bh` and `calib` — those detections survive every threshold adjustment.
+- **Detections change**, so `spike_slab` / `spike_slab_lasso` results from 0.5.1 and
+  earlier are not comparable unless `spike_sd` is passed explicitly. Pass
+  `spike_sd = 0.05` to reproduce an older fit.
+- The direct evidence concerns `spike_sd`; `beta_spike_sd` was raised with it for
+  consistency of spike width across the two coefficient blocks, without an
+  equivalent study of the covariate side.
+
 ### Monitoring bases (0.5.1)
 
 - `detectChangepoints_gamma(basis = ...)` accepts **`"lmom"`** and **`"maxent"`** in
@@ -233,15 +253,23 @@ probability of any false alarm across all blocks and cells jointly.
   square the old value** -- `lambda_iq = 0.5` becomes `lambda_iq2 = 0.25`
   (verified bit-identical on the ARCOS fit).
 - `getModel(adaptive_iq = TRUE)` is the **new default**: `lambda_iq2` is learned
-  by an EM recursion run between refits, controlled by `iq_em_max_iter`,
-  `iq_em_tol` and `iq_em_update`. Diagnostics are returned in `fit$iq_em`
-  (including a per-iteration `trace`). Because every EM iteration is a *full
-  refit*, this makes a default `getModel()` call up to `iq_em_max_iter` times
-  more expensive; pass `adaptive_iq = FALSE` for the old single-fit behavior.
-  `iq_em_update = "fixedpoint"` reaches the same limit in far fewer refits.
+  by an EM recursion run between refits, controlled by `iq_em_max_iter` and
+  `iq_em_tol`. Diagnostics are returned in `fit$iq_em` (including a per-iteration
+  `trace`). Because every EM iteration is a *full refit*, this makes a default
+  `getModel()` call several times more expensive; pass `adaptive_iq = FALSE` for
+  the old single-fit behavior.
   The E-step uses Laplace-approximation draws rather than the exact conditional
   posterior, so this is an *approximate* empirical-Bayes EM with no
   monotone-ascent guarantee.
+- **`iq_em_update` was removed in 0.5.2.** It chose between the creeping EM
+  recursion `lambda2_{s+1} = 2N*lambda2_s/(lambda_s*Sbar + N)` and a direct jump
+  to its fixed point `(N/Sbar)^2`. Solving the first for its fixed point *gives*
+  the second, so both converge to the same value from any start (verified from
+  1e-4, 1 and 1e6) — but the creeping form needs ~44 refits where the jump needs
+  1, and `"em"` was the **default**. Its only claim was monotone ascent under an
+  exact E-step, which a Monte-Carlo E-step does not provide. The M-step now
+  always jumps. The outer loop still iterates, because `Sbar` is recomputed from
+  a refit at the updated `lambda`.
 - The CV helpers (`cv_copss_map`, `cv_copss_grid`, `cv_copss_mcmc`) default
   `adaptive_iq = FALSE` so a tuning sweep is not silently multiplied by the EM,
   and they now **error** on an unrecognized tuning name instead of silently

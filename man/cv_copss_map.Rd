@@ -19,7 +19,6 @@ cv_copss_map(
   iq_em_max_iter = 30,
   iq_em_tol = 0.001,
   iq_em_mc_tol = 0.02,
-  iq_em_update = c("em", "fixedpoint"),
   seed = 123,
   verbose = TRUE
 )
@@ -50,7 +49,7 @@ Defaults to FALSE here, unlike \code{getModel}, because every EM iteration is a
 full refit: leaving it on multiplies the cost of the CV sweep by up to
 \code{iq_em_max_iter}. Set TRUE only if the IQ level must be retuned per fold.}
 
-\item{iq_em_max_iter, iq_em_tol, iq_em_mc_tol, iq_em_update}{EM controls forwarded to
+\item{iq_em_max_iter, iq_em_tol, iq_em_mc_tol}{EM controls forwarded to
 \code{getModel}; see there.}
 
 \item{seed}{Random seed.}

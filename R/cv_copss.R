@@ -68,7 +68,7 @@ pinball_loss <- function(y_val, qhat, taus) {
 #'   Defaults to FALSE here, unlike \code{getModel}, because every EM iteration is a
 #'   full refit: leaving it on multiplies the cost of the CV sweep by up to
 #'   \code{iq_em_max_iter}. Set TRUE only if the IQ level must be retuned per fold.
-#' @param iq_em_max_iter,iq_em_tol,iq_em_mc_tol,iq_em_update EM controls forwarded to
+#' @param iq_em_max_iter,iq_em_tol,iq_em_mc_tol EM controls forwarded to
 #'   \code{getModel}; see there.
 #' @param prior_beta Prior type for betaX (default "normal").
 #' @param prior_gamma Prior type for gamma (default "spike_slab").
@@ -105,11 +105,8 @@ cv_copss_map <- function(y, taus, H, X = NULL, w,
                             iq_em_max_iter = 30,
                             iq_em_tol = 1e-3,
                             iq_em_mc_tol = 0.02,
-                            iq_em_update = c("em", "fixedpoint"),
                             seed = 123,
                             verbose = TRUE) {
-
-  iq_em_update <- match.arg(iq_em_update)
 
   fit_and_score <- function(idx_train, idx_val, lnc) {
     y_tr <- y[idx_train]
@@ -127,7 +124,6 @@ cv_copss_map <- function(y, taus, H, X = NULL, w,
         iq_em_max_iter = iq_em_max_iter,
         iq_em_tol = iq_em_tol,
         iq_em_mc_tol = iq_em_mc_tol,
-        iq_em_update = iq_em_update,
         prior_beta = prior_beta,
         prior_gamma = prior_gamma,
         fit_method = "map",
