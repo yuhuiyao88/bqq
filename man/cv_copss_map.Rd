@@ -19,6 +19,7 @@ cv_copss_map(
   iq_em_max_iter = 30,
   iq_em_tol = 0.001,
   iq_em_mc_tol = 0.02,
+  loss = c("score", "pinball"),
   seed = 123,
   verbose = TRUE
 )
@@ -52,17 +53,30 @@ full refit: leaving it on multiplies the cost of the CV sweep by up to
 \item{iq_em_max_iter, iq_em_tol, iq_em_mc_tol}{EM controls forwarded to
 \code{getModel}; see there.}
 
+\item{loss}{Validation loss used to rank the grid: \code{"score"} (default)
+is the exact unconstrained score-likelihood criterion of \code{score_loss}
+(exact indicator score, no smoothing, no penalties); \code{"pinball"}
+restores the previous average pinball (check) loss. Both losses are always
+computed and returned; \code{loss} decides which one fills
+\code{train_loss}/\code{val_loss} and sorts the result.}
+
 \item{seed}{Random seed.}
 
 \item{verbose}{Print progress messages.}
 }
 \value{
-A data.frame of grid values and CV losses (lower is better), sorted by val_loss.
+A data.frame of grid values and CV losses (lower is better), sorted
+  by val_loss. \code{train_loss}/\code{val_loss} carry the selected loss;
+  \code{train_pinball}/\code{val_pinball} and \code{train_score}/
+  \code{val_score} report both criteria, and \code{cv_loss} records which
+  one did the ranking.
 }
 \description{
 Implements the COPSS-style split (odds vs evens) and evaluates a grid of
 \code{lambda_nc} using MAP fits from \code{getModel}.
-Scoring uses the average pinball (check) loss across all taus on the held-out fold.
+Scoring uses the validation loss selected by \code{loss}: the exact
+unconstrained score-likelihood criterion (default; see \code{score_loss}) or
+the average pinball (check) loss across all taus on the held-out fold.
 IQ shrinkage uses its own penalty lambda_iq2 (adaptive or fixed).
 }
 \examples{

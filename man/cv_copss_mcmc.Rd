@@ -14,6 +14,7 @@ cv_copss_mcmc(
   base_args = list(),
   mcmc_warmup = 200,
   mcmc_draws = 300,
+  loss = c("score", "pinball"),
   seed = 123,
   verbose = TRUE
 )
@@ -35,12 +36,19 @@ cv_copss_mcmc(
 
 \item{mcmc_draws}{Number of MCMC sampling iterations (default 300).}
 
+\item{loss}{Validation loss used to rank the grid: \code{"score"} (default)
+is the exact unconstrained score-likelihood criterion of \code{score_loss};
+\code{"pinball"} restores the previous average pinball (check) loss. Both
+are always computed and returned; \code{loss} decides which one fills
+\code{train_loss}/\code{val_loss} and sorts the result.}
+
 \item{seed}{Random seed.}
 
 \item{verbose}{Print progress.}
 }
 \value{
-data.frame with grid and CV losses.
+data.frame with grid and CV losses (see \code{cv_copss_map} for the
+  loss columns).
 }
 \description{
 Uses MCMC with shorter draws instead of MAP for hyperparameter selection.

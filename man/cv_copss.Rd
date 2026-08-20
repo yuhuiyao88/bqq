@@ -4,6 +4,8 @@
 \alias{cv_copss}
 \title{Cross-Validation for Interquantile Shrinkage Model (getModel)}
 \description{
-COPSS-style order-preserved 2-fold CV for tuning lambda_nc
-in the interquantile shrinkage quantile regression model.
+COPSS-style order-preserved 2-fold CV for tuning hyperparameters
+in the interquantile shrinkage quantile regression model. Two validation
+losses are available: the exact unconstrained score-likelihood criterion
+(default) and the average pinball (check) loss.
 }

@@ -12,6 +12,7 @@ cv_copss_grid(
   w,
   grid,
   base_args = list(),
+  loss = c("score", "pinball"),
   seed = 123,
   verbose = TRUE
 )
@@ -29,12 +30,19 @@ cv_copss_grid(
 
 \item{base_args}{Named list of additional arguments passed to getModel.}
 
+\item{loss}{Validation loss used to rank the grid: \code{"score"} (default)
+is the exact unconstrained score-likelihood criterion of \code{score_loss};
+\code{"pinball"} restores the previous average pinball (check) loss. Both
+are always computed and returned; \code{loss} decides which one fills
+\code{train_loss}/\code{val_loss} and sorts the result.}
+
 \item{seed}{Random seed.}
 
 \item{verbose}{Print progress.}
 }
 \value{
-data.frame with grid and CV losses.
+data.frame with grid and CV losses (see \code{cv_copss_map} for the
+  loss columns).
 }
 \description{
 More flexible version that accepts a data.frame grid of hyperparameters.
