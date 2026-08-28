@@ -749,9 +749,21 @@ getEta <- function(fit_result, H = NULL, X = NULL, offset = NULL, n_samples = 10
 #'   - "last": Last observation in the block
 #'   - "middle": Middle observation in the block
 #'   - "max_deviation": Observation with maximum deviation from the predictive median (fitted eta at tau = 0.5)
-#'   - "pinball": Observation that splits the block to minimize the equally weighted pinball (check) loss between the pre-block and block fitted quantile vectors (the same loss used for cross-validation)
-#' @param y Original data (required for signal_position = "max_deviation" or "pinball")
-#' @param eta Predictive quantiles array (required for signal_position = "max_deviation" or "pinball")
+#'   - "score": Observation that splits the block to minimise the negative unrestricted
+#'     score likelihood of the manuscript's Eq. (6), evaluated on the block alone with an
+#'     intercept plus a step at the candidate. Writing S1 and S2 for the quantile-score sums
+#'     over the pre- and post-candidate segments, of sizes n1 and n2, and Q for the quantile
+#'     kernel matrix with Q[a,b] = min(tau_a, tau_b) - tau_a * tau_b, the criterion is
+#'     0.5 * (t(S1) %*% solve(Q) %*% S1 / n1 + t(S2) %*% solve(Q) %*% S2 / n2).
+#'     This is the criterion \code{cv_copss} selects on, so localisation and tuning agree.
+#'   - "pinball": Observation that splits the block to minimize the equally weighted pinball
+#'     (check) loss between the pre-block and block fitted quantile vectors. NOTE: this is
+#'     NOT the cross-validation criterion; \code{cv_copss} defaults to the score loss. The
+#'     pinball criterion localises more sharply in simulation (mean absolute error about 1.2
+#'     observations against about 3 for "score", at a 1.5 sd location shift), so it remains
+#'     available as the alternative.
+#' @param y Original data (required for signal_position = "max_deviation", "pinball" or "score")
+#' @param eta Predictive quantiles array (required for signal_position = "max_deviation", "pinball" or "score")
 #' @param laplace_n_samples Number of Laplace draws generated on the fly, used only
 #'   for backward compatibility when \code{fit_result$laplace_samples} is absent
 #'   (a normal MAP fit already carries the draws, so this is otherwise ignored).
@@ -825,7 +837,7 @@ getEta <- function(fit_result, H = NULL, X = NULL, offset = NULL, n_samples = 10
 #'   \code{basis}/\code{statistic} are also returned.
 #' @export
 detectChangepoints_gamma <- function(fit_result, taus, l, w,
-                                     signal_position = c("first", "last", "middle", "max_deviation", "pinball"),
+                                     signal_position = c("first", "last", "middle", "max_deviation", "pinball", "score"),
                                      y = NULL, eta = NULL,
                                      laplace_n_samples = 1000, alpha = 0.05,
                                      basis = c("quantile", "qss"),
@@ -1141,6 +1153,46 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
       # Return observation with maximum deviation
       max_dev_idx <- which.max(deviations)
       return(block_obs[max_dev_idx])
+
+    } else if (position_method == "score") {
+      # Refine the change time by minimising the negative unrestricted score likelihood
+      # (Eq. 6 of the manuscript) restricted to the block, with the design taken to be an
+      # intercept plus a step at the candidate. That design makes G block diagonal, so
+      # (Q kron G)^{-1} = Q^{-1} kron G^{-1} and the criterion separates into the two
+      # segment sums below. This is the criterion cv_copss selects on.
+      qhat <- if (!is.null(eta_hat)) eta_hat
+              else if (!is.null(eta_data)) apply(eta_data, c(2, 3), mean)
+              else NULL
+      if (is.null(y_data) || is.null(qhat) || is.null(tau_levels)) {
+        warning("y, a fitted quantile estimate, and taus required for score; using 'first' instead")
+        return(obs_start)
+      }
+      if (obs_start < 2) return(obs_start)
+      m_q <- length(tau_levels)
+      Qk  <- outer(tau_levels, tau_levels, function(a, b) pmin(a, b) - a * b)
+      Qi  <- tryCatch(solve(Qk), error = function(e) NULL)
+      if (is.null(Qi)) {
+        warning("quantile kernel matrix is singular; using 'first' instead")
+        return(obs_start)
+      }
+      pre <- qhat[, obs_start - 1]; post <- qhat[, obs_start]
+      block_obs <- obs_start:obs_end
+      yb <- y_data[block_obs]
+      best_c <- obs_start; best_L <- Inf
+      for (cc in block_obs) {
+        i1 <- block_obs < cc; i2 <- !i1
+        n1 <- sum(i1); n2 <- sum(i2)
+        # both segments must be non-empty for the two-column design to have full rank
+        if (n1 == 0L || n2 == 0L) next
+        S1 <- vapply(seq_len(m_q), function(q)
+                sum(tau_levels[q] - (yb[i1] < pre[q])),  numeric(1))
+        S2 <- vapply(seq_len(m_q), function(q)
+                sum(tau_levels[q] - (yb[i2] < post[q])), numeric(1))
+        L <- 0.5 * (drop(crossprod(S1, Qi %*% S1)) / n1 +
+                    drop(crossprod(S2, Qi %*% S2)) / n2)
+        if (L < best_L) { best_L <- L; best_c <- cc }
+      }
+      return(best_c)
 
     } else if (position_method == "pinball") {
       # Refine the change time within the block by minimizing the equally
