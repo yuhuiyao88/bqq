@@ -60,13 +60,22 @@
 # family/statistic/adjustment actually recorded in `detection`. Reading a hardcoded
 # member (as this once did) silently returns nothing whenever the caller ran a basis
 # other than "quantile", which is why a QSS-only detection drew no lines at all.
-.bqq_sig_blocks <- function(detection) {
+.bqq_sig_blocks <- function(detection, basis = NULL) {
   empty <- list(blocks = integer(0), onset = numeric(0), located = numeric(0))
   db <- detection$detected_blocks
   if (is.null(db)) return(empty)
 
   fam <- if (!is.null(detection$basis)) detection$basis else "quantile"
-  fam <- if ("quantile" %in% fam) "quantile" else "qss"   # quantile wins if both were run
+  # `basis` lets a caller pin the family so a plot marks the blocks flagged by
+  # the SAME test its panel displays. Without it the old precedence applies and
+  # quantile wins whenever it was run, which silently made an L-moment or QSS
+  # panel carry quantile-basis change points.
+  if (!is.null(basis) && length(basis) == 1L &&
+      !is.null(detection$tests) && !is.null(detection$tests[[basis]])) {
+    fam <- basis
+  } else {
+    fam <- if ("quantile" %in% fam) "quantile" else "qss"   # quantile wins if both were run
+  }
   stat <- if (!is.null(detection$statistic)) detection$statistic else "ui"
   stat_name <- if (("hotelling_t2" %in% stat) && !("ui" %in% stat)) "hotelling_t2" else "ui"
   adjust <- if (!is.null(detection$adjust)) detection$adjust else "calib"
@@ -119,7 +128,7 @@
 plotQuantileProcess <- function(fit, time = NULL, center = 0, scale = 1,
                                 detection = NULL, title = NULL,
                                 xlab = "time", ylab = "value",
-                                show_onset = TRUE, show_located = TRUE) {
+                                show_onset = TRUE, show_located = TRUE, basis = NULL) {
   .bqq_need_ggplot2()
   pal <- .bqq_pal
   taus <- if (!is.null(detection) && !is.null(detection$taus)) detection$taus
@@ -141,7 +150,7 @@ plotQuantileProcess <- function(fit, time = NULL, center = 0, scale = 1,
     ggplot2::geom_line(ggplot2::aes(y = q3), color = pal$steel, linewidth = 0.5) +
     ggplot2::geom_line(ggplot2::aes(y = med), color = pal$ink, linewidth = 0.9)
   if (!is.null(detection)) {
-    loc <- .bqq_sig_blocks(detection)
+    loc <- .bqq_sig_blocks(detection, basis = basis)
     if (isTRUE(show_onset) && length(loc$onset) > 0) {
       p <- p + ggplot2::geom_vline(xintercept = time[loc$onset], color = pal$crimson,
                                    linewidth = 0.6, alpha = 0.85)
@@ -193,7 +202,7 @@ plotQSSProcess <- function(fit, eta = NULL, H = NULL, X = NULL, time = NULL,
                            center = 0, scale = 1, level = 0.95, detection = NULL,
                            seed = NULL, title = NULL,
                            xlab = "time", ylab = NULL,
-                           show_onset = TRUE, show_located = TRUE) {
+                           show_onset = TRUE, show_located = TRUE, basis = NULL) {
   .bqq_need_ggplot2()
   pal <- .bqq_pal
   taus <- if (!is.null(detection) && !is.null(detection$taus)) detection$taus
@@ -215,13 +224,82 @@ plotQSSProcess <- function(fit, eta = NULL, H = NULL, X = NULL, time = NULL,
   cols <- c(Location = pal$ink, Scale = pal$crimson, Skewness = pal$rose, Kurtosis = pal$brick)
   p <- ggplot2::ggplot(df, ggplot2::aes(x = time))
   if (!is.null(detection)) {
-    loc <- .bqq_sig_blocks(detection)
+    loc <- .bqq_sig_blocks(detection, basis = basis)
     ob <- loc$onset[!is.na(loc$onset) & loc$onset >= 1 & loc$onset <= n]
     if (isTRUE(show_onset) && length(ob) > 0)
       p <- p + ggplot2::geom_vline(xintercept = time[ob], color = pal$crimson,
                                    linetype = "dashed", linewidth = 0.35, alpha = 0.55)
     # localized change-point within each OOC block (Eq. 27): solid, so it is
     # distinguishable from the dashed block onset.
+    lp <- loc$located[!is.na(loc$located) & loc$located >= 1 & loc$located <= n]
+    if (isTRUE(show_located) && length(lp) > 0)
+      p <- p + ggplot2::geom_vline(xintercept = time[lp], color = pal$crimson,
+                                   linewidth = 0.6, alpha = 0.9)
+  }
+  p +
+    ggplot2::geom_ribbon(ggplot2::aes(ymin = lo, ymax = hi, fill = stat), alpha = 0.22) +
+    ggplot2::geom_line(ggplot2::aes(y = mid, color = stat), linewidth = 0.8) +
+    ggplot2::scale_fill_manual(values = cols, guide = "none") +
+    ggplot2::scale_color_manual(values = cols, guide = "none") +
+    ggplot2::facet_wrap(~stat, ncol = 1, scales = "free_y", strip.position = "left") +
+    ggplot2::labs(x = xlab, y = ylab, title = title) + .bqq_theme() +
+    ggplot2::theme(
+      panel.border = ggplot2::element_rect(color = "grey55", fill = NA, linewidth = 0.5),
+      panel.spacing.y = ggplot2::unit(0.6, "lines"))
+}
+
+#' L-moment shape profile over time
+#'
+#' The L-moment counterpart of \code{\link{plotQSSProcess}}: posterior median and
+#' credible band for each of the four approximate L-moments over time, computed by
+#' \code{\link{getLmom}} from the fitted quantiles.
+#'
+#' Change-point marks default to \code{basis = "lmom"}, so the vertical rules come
+#' from the SAME L-moment UI test that flags the L-moment heatmap panel. That is the
+#' whole point of this function: an L-moment profile carrying quantile-basis change
+#' points would be internally inconsistent.
+#'
+#' @inheritParams plotQSSProcess
+#' @param basis Which detection family supplies the change-point marks. Defaults to
+#'   \code{"lmom"}; pass another family name to override, or \code{NULL} for the
+#'   package's legacy precedence (quantile wins when it was run).
+#'
+#' @note The panels are the L-moments \eqn{\lambda_r}, not the scale-free ratios
+#'   \eqn{\tau_r}; see \code{\link{getLmom}}.
+#'
+#' @export
+plotLmomProcess <- function(fit, eta = NULL, H = NULL, X = NULL, time = NULL,
+                            center = 0, scale = 1, level = 0.95, detection = NULL,
+                            seed = NULL, title = NULL,
+                            xlab = "time", ylab = NULL,
+                            show_onset = TRUE, show_located = TRUE,
+                            basis = "lmom") {
+  .bqq_need_ggplot2()
+  pal <- .bqq_pal
+  taus <- if (!is.null(detection) && !is.null(detection$taus)) detection$taus
+          else .bqq_taus(fit, NULL)
+  if (is.null(eta)) eta <- getEta(fit, H = H, X = X, seed = seed)
+  eta <- eta * scale + center
+  eta <- aperm(apply(eta, c(1, 3), sort), c(2, 1, 3))   # non-crossing per draw
+  lm4 <- getLmom(eta, taus = taus)                      # [iters, 4, n]
+  a <- (1 - level) / 2
+  mid <- apply(lm4, c(2, 3), stats::median, na.rm = TRUE)
+  lo  <- apply(lm4, c(2, 3), stats::quantile, probs = a, na.rm = TRUE)
+  hi  <- apply(lm4, c(2, 3), stats::quantile, probs = 1 - a, na.rm = TRUE)
+  n <- dim(lm4)[3]
+  if (is.null(time)) time <- seq_len(n)
+  labs4 <- dimnames(lm4)[[2]]
+  df <- do.call(rbind, lapply(seq_len(4), function(k) data.frame(
+    time = time, stat = factor(labs4[k], levels = labs4),
+    mid = mid[k, ], lo = lo[k, ], hi = hi[k, ])))
+  cols <- stats::setNames(c(pal$ink, pal$crimson, pal$rose, pal$brick), labs4)
+  p <- ggplot2::ggplot(df, ggplot2::aes(x = time))
+  if (!is.null(detection)) {
+    loc <- .bqq_sig_blocks(detection, basis = basis)
+    ob <- loc$onset[!is.na(loc$onset) & loc$onset >= 1 & loc$onset <= n]
+    if (isTRUE(show_onset) && length(ob) > 0)
+      p <- p + ggplot2::geom_vline(xintercept = time[ob], color = pal$crimson,
+                                   linetype = "dashed", linewidth = 0.35, alpha = 0.55)
     lp <- loc$located[!is.na(loc$located) & loc$located >= 1 & loc$located <= n]
     if (isTRUE(show_located) && length(lp) > 0)
       p <- p + ggplot2::geom_vline(xintercept = time[lp], color = pal$crimson,

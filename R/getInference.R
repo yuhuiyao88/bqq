@@ -1332,6 +1332,42 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
 #' @param taus Vector of quantile levels (must include 0.025, 0.25, 0.5, 0.75, 0.975 or similar)
 #' @return 3D array [iterations, 4, time] containing QSS statistics
 #' @export
+#' Approximate L-moment shape statistics from fitted quantiles
+#'
+#' The L-moment analogue of \code{\link{getQSS}}. Applies the fixed 4 x m
+#' shifted-Legendre weight matrix of Appendix E, \code{lambda = W q}, to the
+#' fitted quantiles at every draw and time point. This is the SAME linear
+#' functional \code{detectChangepoints_gamma(basis = "lmom")} tests, so a
+#' profile drawn from it is consistent with the L-moment heatmap panel and the
+#' L-moment block flags.
+#'
+#' @param eta Array of fitted quantiles, \code{[draws, m, n]} (see \code{getEta}).
+#' @param taus Quantile levels; must match \code{dim(eta)[2]}.
+#'
+#' @return Array \code{[draws, 4, n]} with second-dimension names
+#'   \code{c("L-location", "L-scale", "L-skewness", "L-kurtosis")}.
+#'
+#' @note These are the L-moments \eqn{\lambda_1, \ldots, \lambda_4}, NOT the
+#'   scale-free ratios \eqn{\tau_r = \lambda_r / \lambda_2} that the terms
+#'   "L-skewness" and "L-kurtosis" conventionally denote (Hosking 1990, Sec. 2.2).
+#'   \eqn{\lambda_3} and \eqn{\lambda_4} therefore carry the units of the data
+#'   and are not scale-free. The names are kept as they are because the detection
+#'   weights and the heatmap panel use the same labels; consistency across the
+#'   figure set matters more here than the naming convention.
+#'
+#' @export
+getLmom <- function(eta, taus = c(0.025, 0.25, 0.5, 0.75, 0.975)) {
+  W <- .bqq_lmom_weights(taus)                 # 4 x m, rows already named
+  n_iter <- dim(eta)[1]; m <- dim(eta)[2]; n <- dim(eta)[3]
+  if (ncol(W) != m)
+    stop("getLmom: taus has length ", ncol(W), " but eta has ", m,
+         " quantile levels.", call. = FALSE)
+  out <- array(NA_real_, dim = c(n_iter, 4L, n))
+  dimnames(out) <- list(NULL, rownames(W), NULL)
+  for (s in seq_len(n_iter)) out[s, , ] <- W %*% eta[s, , ]
+  out
+}
+
 getQSS <- function(eta, taus = c(0.025, 0.25, 0.5, 0.75, 0.975)) {
 
   n_iter <- dim(eta)[1]
