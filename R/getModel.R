@@ -163,7 +163,13 @@
 #' @param alpha Deprecated scalar retained for backward compatibility. It is no
 #'   longer used in the \code{adaptive_lasso} or \code{het_group_lasso} prior
 #'   construction.
-#' @param eps_w Positive scalar added to pilot estimates for numerical stability
+#' @param eps_w Positive scalar FLOOR on the pilot adjacent-difference used in the
+#'   adaptive IQ weight. Appendix C / manuscript Eq. (15) define
+#'   w_{q,j} = |gamma^pilot_{q,j} - gamma^pilot_{q-1,j}|^{-1}; this floor reproduces
+#'   that exactly whenever the pilot difference is at least eps_w, and only caps the
+#'   weight at 1/eps_w for degenerate (near-zero) differences. Before 0.6.1 the code
+#'   used (diff + eps_w)^{-1}, which perturbed EVERY weight rather than only the
+#'   degenerate ones
 #'   in the IQ shrinkage weights (default 1e-6).
 #' @param c_sigma Positive scalar scaling factor for the base scale (default 1.0).
 #' @param base_scale Optional positive scalar smoothing bandwidth. Defaults to the
@@ -1104,7 +1110,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
       for (q in 2:m) {
         for (j in seq_len(r)) {
           diff_val <- abs(gamma_pilot[q, j] - gamma_pilot[q - 1, j])
-          w_iq_gamma[q - 1, j] <- (diff_val + eps_w)^(-1)
+          w_iq_gamma[q - 1, j] <- 1 / max(diff_val, eps_w)
         }
       }
     }
@@ -1114,7 +1120,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
       for (q in 2:m) {
         for (j in seq_len(p_slope)) {
           diff_val <- abs(beta_pilot[q, j] - beta_pilot[q - 1, j])
-          w_iq_beta[q - 1, j] <- (diff_val + eps_w)^(-1)
+          w_iq_beta[q - 1, j] <- 1 / max(diff_val, eps_w)
         }
       }
     }
