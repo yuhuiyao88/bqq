@@ -208,8 +208,11 @@
 #' @param beta_sd Positive scalar prior std dev for \code{betaX} coefficients under
 #'   \code{prior_beta = "normal"} (default 1.0).
 #' @param lambda_nc Positive scalar weight for the non-crossing penalty (larger is stricter).
-#' @param lambda_iq2 Non-negative scalar, the \strong{squared} interquantile (IQ)
-#'   shrinkage weight \eqn{\lambda_{iq}^2}. The penalty applied to the target is
+#' @param lambda_iq2 \code{NULL} (default) or a non-negative scalar, the \strong{squared}
+#'   interquantile (IQ) shrinkage weight \eqn{\lambda_{iq}^2}. \code{NULL} with
+#'   \code{adaptive_iq = TRUE} starts the EM at the pilot-scale value
+#'   \eqn{\lambda_{iq} = r(m-1)}, the fixed point of the M-step evaluated at the pilot
+#'   fit (the Park and Casella 2008 starting rule); \code{NULL} without the EM means 1. The penalty applied to the target is
 #'   \eqn{\sqrt{\lambda_{iq}^2}\sum_q |\gamma_q - \gamma_{q-1}|}, i.e. the effective
 #'   L1 fusion rate is the \emph{square root} of this argument. This matches the
 #'   \code{lambda_lasso2} / \code{lambda_beta2} convention, where the stored quantity
@@ -310,6 +313,12 @@
 #'   objective, typically reducing the iteration count without loosening any
 #'   stopping tolerance.
 #' @param map_iter Maximum iterations for MAP optimization.
+#' @param map_init_values Optional named list of starting values for the MAP
+#'   optimization, typically \code{cv_winner_init(cv)}: the fold-averaged
+#'   \code{beta0}, \code{betaX} and \code{gamma} of the cross-validation winner.
+#'   Components whose dimensions match the model replace the corresponding entries
+#'   of the \code{map_init} start; everything else keeps that start. Ignored for
+#'   \code{fit_method = "mcmc"}.
 #' @param map_init Initialization for MAP optimization. \code{"pilot"} (default)
 #'   fits a marginal LASSO quantile regression at each quantile level on
 #'   \code{[1 | X | H]} (\code{quantreg::rq.fit.lasso}; intercept unpenalized,
@@ -425,7 +434,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
                         base_scale = NULL, beta0_loc = NULL, beta0_scale = NULL,
                         beta_sd = 1.0,
                         lambda_nc = 2,
-                        lambda_iq2 = 1,
+                        lambda_iq2 = NULL,
                         adaptive_iq = TRUE,
                         iq_em_max_iter = 60,
                         iq_em_tol = 1e-3,
@@ -444,6 +453,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
                         seed = 123, verbose = FALSE,
                         map_hessian = TRUE,
                         map_init = c("pilot", "prior_center", "random"),
+                        map_init_values = NULL,
                         map_tol_obj = 1e-12, map_tol_grad = 1e-8,
                         map_tol_rel_grad = 1e2, map_tol_param = 1e-8,
                         map_tol_rel_obj = 1e2,
@@ -467,11 +477,11 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
   fit_method   <- match.arg(fit_method)
   map_init     <- match.arg(map_init)
 
-  if (!is.numeric(lambda_iq2) || length(lambda_iq2) != 1L ||
-      is.na(lambda_iq2) || lambda_iq2 < 0) {
-    stop("lambda_iq2 must be a single non-negative scalar (it is lambda^2, not lambda).")
+  if (!is.null(lambda_iq2) && (!is.numeric(lambda_iq2) || length(lambda_iq2) != 1L ||
+      is.na(lambda_iq2) || lambda_iq2 < 0)) {
+    stop("lambda_iq2 must be NULL or a single non-negative scalar (it is lambda^2, not lambda).")
   }
-  if (isTRUE(adaptive_iq) && lambda_iq2 <= 0) {
+  if (isTRUE(adaptive_iq) && !is.null(lambda_iq2) && lambda_iq2 <= 0) {
     stop("lambda_iq2 must be > 0 when adaptive_iq = TRUE: it is the EM starting value, ",
          "and the recursion has an absorbing fixed point at 0.")
   }
@@ -1155,6 +1165,18 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
   }
 
 
+  # Pilot-scale start for the EM (default since 0.6.3). Appendix C's fixed point
+  # (C.9), lambda = r(m-1)^2 / sum_k w_k E|d_k|, evaluated at the pilot fit: with the
+  # adaptive weights w_k = 1/|d_k^pilot| the sum equals the number of penalized
+  # differences N = r(m-1) (+ p_slope(m-1)), so the start is lambda = N, i.e.
+  # lambda_iq2 = N^2. This is the analogue of Park & Casella (2008, Sec. 3.1), who
+  # start their marginal-likelihood EM at the fixed point evaluated with least-squares
+  # estimates. Without the EM, NULL falls back to the pre-0.6.3 default of 1.
+  if (is.null(lambda_iq2)) {
+    N0 <- .bqq_iq_n_diff(r, p_slope, m)
+    lambda_iq2 <- if (isTRUE(adaptive_iq) && N0 > 0L) as.numeric(N0)^2 else 1
+  }
+
   stan_data <- list(
     n = n, px = px, m = m, r = r,
     X = X, H = H,
@@ -1250,6 +1272,26 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
               "unavailable; falling back to 'prior_center'.")
       map_init <- "prior_center"
     }
+  }
+
+  # Starting values actually used: the map_init choice, overridden component-wise
+  # by map_init_values (e.g. the cross-validation winner's coefficients) where the
+  # dimensions match. Applied to both the direct and the EM MAP paths below.
+  init_used <- if (map_init == "prior_center") init_prior_center else init_pilot
+  map_init_used <- map_init
+  if (!is.null(map_init_values) && fit_method == "map") {
+    stopifnot(is.list(map_init_values))
+    taken <- character(0)
+    for (nm in names(map_init_values)) {
+      v <- map_init_values[[nm]]
+      if (nm %in% names(init_used) && is.numeric(v) && all(is.finite(v)) &&
+          identical(as.integer(dim(as.array(v))), as.integer(dim(as.array(init_used[[nm]]))))) {
+        init_used[[nm]] <- if (is.matrix(init_used[[nm]])) matrix(v, nrow(init_used[[nm]]), ncol(init_used[[nm]])) else as.array(as.numeric(v))
+        taken <- c(taken, nm)
+      }
+    }
+    if (length(taken)) map_init_used <- paste0(map_init, "+values(", paste(taken, collapse = ","), ")")
+    else warning("map_init_values supplied but no component matched the model dimensions; using map_init = '", map_init, "'.")
   }
 
   # Run rstan::optimizing with its generic "non-zero return code" warning
@@ -1569,8 +1611,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
       seed = seed,
       verbose = verbose
     )
-    if (map_init == "prior_center") opt_args$init <- init_prior_center
-    else if (map_init == "pilot")   opt_args$init <- init_pilot
+    if (map_init != "random") opt_args$init <- init_used
     if (!is.null(map_tol_obj))       opt_args$tol_obj       <- map_tol_obj
     if (!is.null(map_tol_grad))      opt_args$tol_grad      <- map_tol_grad
     if (!is.null(map_tol_rel_grad))  opt_args$tol_rel_grad  <- map_tol_rel_grad
@@ -1604,8 +1645,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
       seed = seed,
       verbose = verbose
     )
-    if (map_init == "prior_center") opt_args$init <- init_prior_center
-    else if (map_init == "pilot")   opt_args$init <- init_pilot
+    if (map_init != "random") opt_args$init <- init_used
     if (!is.null(map_tol_obj))       opt_args$tol_obj       <- map_tol_obj
     if (!is.null(map_tol_grad))      opt_args$tol_grad      <- map_tol_grad
     if (!is.null(map_tol_rel_grad))  opt_args$tol_rel_grad  <- map_tol_rel_grad

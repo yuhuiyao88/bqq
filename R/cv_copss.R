@@ -180,7 +180,7 @@ cv_copss_map <- function(y, taus, H, X = NULL, w,
                             prior_beta = "normal",
                             prior_gamma = "spike_slab",
                             map_iter = 2000,
-                            lambda_iq2 = 1,
+                            lambda_iq2 = NULL,
                             adaptive_iq = TRUE,
                             iq_em_max_iter = 30,
                             cv_laplace_n_samples = 2000,
@@ -359,10 +359,22 @@ cv_copss_map <- function(y, taus, H, X = NULL, w,
 #'   are always computed and returned; \code{loss} decides which one fills
 #'   \code{train_loss}/\code{val_loss} and sorts the result.
 #' @param seed Random seed.
+#' @param warm_start_iq Logical (default TRUE). When the fits learn
+#'   \eqn{\lambda_{iq}^2} by EM, each grid row starts its EM at the value the
+#'   previous row converged to (mean over folds) instead of the pilot-scale start.
+#'   The EM fixed point is data-determined, so the losses and the winner are the
+#'   same up to the EM tolerance; the slow recursion phase is mostly skipped.
+#' @param cv_iq_em_tol Relative-change tolerance of the EM inside the tuning fits
+#'   (default 1e-2, looser than \code{getModel}'s 1e-3). The validation scores that
+#'   rank the grid differ by far more than a one-percent change in
+#'   \eqn{\lambda_{iq}^2} moves them, so the tighter tolerance only costs
+#'   iterations here. An \code{iq_em_tol} in \code{base_args} or the grid overrides it.
 #' @param verbose Print progress.
 #'
 #' @return data.frame with grid and CV losses (see \code{cv_copss_map} for the
-#'   loss columns).
+#'   loss columns), plus \code{lambda_iq2_fit}, the mean over folds of the
+#'   \eqn{\lambda_{iq}^2} each row's EM settled on (NA when the EM is off), which a
+#'   caller can pass as the start of the final fit.
 #'
 #' @examples
 #' \donttest{
@@ -380,6 +392,8 @@ cv_copss_grid <- function(y, taus, H, X = NULL, w, grid,
                               base_args = list(),
                               loss = c("score", "pinball"),
                               seed = 123,
+                              warm_start_iq = TRUE,
+                              cv_iq_em_tol = 1e-2,
                               verbose = TRUE) {
 
   loss <- match.arg(loss)
@@ -413,6 +427,7 @@ cv_copss_grid <- function(y, taus, H, X = NULL, w, grid,
     # map_hessian = FALSE for speed, which tuned the other hyperparameters at a fixed
     # lambda_iq2 that the final fit then did not use.
     full_args["laplace_n_samples"] <- list(2000L)   # E-step draws for tuning; base_args may override
+    full_args["iq_em_tol"] <- list(cv_iq_em_tol)      # looser EM tolerance for tuning; base_args may override
 
     # Override with base_args then row_args
     for (nm in names(base_args_l)) full_args[nm] <- list(base_args_l[[nm]])
@@ -490,9 +505,13 @@ cv_copss_grid <- function(y, taus, H, X = NULL, w, grid,
         if (r > 0) as.numeric(H_val %*% gamma[j, ]) else 0
     }
 
-    .bqq_cv_losses(y[idx_train], eta_tr, y[idx_val], eta_val, taus,
-                   Z_tr = cbind(X_tr_design, H_tr),
-                   Z_val = cbind(X_val, H_val))
+    res <- .bqq_cv_losses(y[idx_train], eta_tr, y[idx_val], eta_val, taus,
+                          Z_tr = cbind(X_tr_design, H_tr),
+                          Z_val = cbind(X_val, H_val))
+    res$lambda_iq2 <- if (!is.null(fit$iq_em) && isTRUE(fit$iq_em$adaptive))
+      fit$iq_em$lambda_iq2 else NA_real_
+    res$map_par <- par                      # fold MAP parameters, for cv_winner_init()
+    res
   }
 
   idx_odd  <- seq(1, length(y), by = 2)
@@ -503,30 +522,36 @@ cv_copss_grid <- function(y, taus, H, X = NULL, w, grid,
 
   train_pinballs <- val_pinballs <- numeric(nrow(grid))
   train_scores <- val_scores <- numeric(nrow(grid))
+  lambda_iq2_fit <- rep(NA_real_, nrow(grid))
+  map_par <- vector("list", nrow(grid))
 
+  report <- function(k, row_args, a, b) {
+    if (!verbose) return(invisible(NULL))
+    hp_str <- paste(
+      sprintf("%s=%s", names(row_args), vapply(row_args, function(x) format(x, digits = 3), "")),
+      collapse = ", "
+    )
+    message(sprintf("[cv_copss_grid] iter %d/%d | %s | %s: train=%.4f | val=%.4f",
+                    k, nrow(grid), hp_str, loss,
+                    (a[[tr_sel]] + b[[tr_sel]]) / 2, (a[[val_sel]] + b[[val_sel]]) / 2))
+  }
+  prev <- NULL
   for (k in seq_len(nrow(grid))) {
     row_args <- as.list(grid[k, , drop = FALSE])
-
+    # warm start: row k begins its EM where row k-1 settled (mean over folds)
+    if (isTRUE(warm_start_iq) && !is.null(prev) && is.finite(prev) && prev > 0 &&
+        is.null(row_args$lambda_iq2))
+      row_args$lambda_iq2 <- prev
     a <- fit_and_score(idx_odd, idx_even, row_args)
     b <- fit_and_score(idx_even, idx_odd, row_args)
-
     train_pinballs[k] <- (a$train_pinball + b$train_pinball) / 2
     val_pinballs[k]   <- (a$val_pinball + b$val_pinball) / 2
     train_scores[k]   <- (a$train_score + b$train_score) / 2
     val_scores[k]     <- (a$val_score + b$val_score) / 2
-
-    if (verbose) {
-      hp_str <- paste(
-        sprintf("%s=%s", names(row_args), vapply(row_args, function(x) format(x, digits = 3), "")),
-        collapse = ", "
-      )
-      msg <- sprintf(
-        "[cv_copss_grid] iter %d/%d | %s | %s: train=%.4f | val=%.4f",
-        k, nrow(grid), hp_str, loss,
-        (a[[tr_sel]] + b[[tr_sel]]) / 2, (a[[val_sel]] + b[[val_sel]]) / 2
-      )
-      message(msg)
-    }
+    lambda_iq2_fit[k] <- mean(c(a$lambda_iq2, b$lambda_iq2), na.rm = TRUE)
+    map_par[[k]] <- list(a$map_par, b$map_par)
+    report(k, row_args, a, b)
+    prev <- lambda_iq2_fit[k]
   }
 
   out <- cbind(grid,
@@ -534,11 +559,48 @@ cv_copss_grid <- function(y, taus, H, X = NULL, w, grid,
                val_loss   = if (loss == "score") val_scores else val_pinballs,
                train_pinball = train_pinballs, val_pinball = val_pinballs,
                train_score = train_scores, val_score = val_scores,
+               lambda_iq2_fit = lambda_iq2_fit,
                cv_loss = loss)
-  out <- out[order(out$val_loss), ]
+  ord <- order(out$val_loss)
+  out <- out[ord, ]
   rownames(out) <- NULL
+  attr(out, "map_par") <- map_par[ord]   # fold MAP parameters per row, in the sorted order
 
   out
+}
+
+#' Starting values for the final fit from a cross-validation winner
+#'
+#' Averages the two fold MAP fits of grid row \code{k} of a \code{cv_copss_grid}
+#' result (row 1 is the winner) and returns them as a list \code{beta0},
+#' \code{betaX}, \code{gamma} for \code{getModel(map_init_values = )}. The folds
+#' use the same design as the full series, so the averaged coefficients are on the
+#' scale of the final fit and start the optimizer close to its solution.
+#'
+#' @param cv Result of \code{cv_copss_grid}.
+#' @param k Grid row (in the sorted result); default 1, the winner.
+#' @return A named list of starting values, or \code{NULL} when the fold fits were
+#'   not recorded.
+#' @export
+cv_winner_init <- function(cv, k = 1L) {
+  mp <- attr(cv, "map_par")
+  if (is.null(mp) || length(mp) < k || is.null(mp[[k]])) return(NULL)
+  pars <- Filter(Negate(is.null), mp[[k]])
+  if (!length(pars)) return(NULL)
+  nm <- Reduce(intersect, lapply(pars, names))
+  avg <- Reduce(`+`, lapply(pars, function(p) p[nm])) / length(pars)
+  pick <- function(prefix) {
+    v <- avg[grep(paste0("^", prefix, "\\["), nm)]
+    if (!length(v)) return(NULL)
+    idx <- do.call(rbind, lapply(regmatches(names(v), regexpr("\\[.*\\]", names(v))),
+                                 function(z) as.integer(strsplit(gsub("[][]", "", z), ",")[[1]])))
+    if (ncol(idx) == 1L) return(as.array(as.numeric(v[order(idx[, 1])])))
+    M <- matrix(0, max(idx[, 1]), max(idx[, 2]))
+    M[idx] <- v
+    M
+  }
+  out <- list(beta0 = pick("beta0"), betaX = pick("betaX"), gamma = pick("gamma"))
+  Filter(Negate(is.null), out)
 }
 
 
@@ -687,9 +749,12 @@ cv_copss_mcmc <- function(y, taus, H, X = NULL, w, grid,
         if (r > 0) as.numeric(H_val %*% gamma[j, ]) else 0
     }
 
-    .bqq_cv_losses(y[idx_train], eta_tr, y[idx_val], eta_val, taus,
-                   Z_tr = cbind(X_tr_design, H_tr),
-                   Z_val = cbind(X_val, H_val))
+    res <- .bqq_cv_losses(y[idx_train], eta_tr, y[idx_val], eta_val, taus,
+                          Z_tr = cbind(X_tr_design, H_tr),
+                          Z_val = cbind(X_val, H_val))
+    res$lambda_iq2 <- if (!is.null(fit$iq_em) && isTRUE(fit$iq_em$adaptive))
+      fit$iq_em$lambda_iq2 else NA_real_
+    res
   }
 
   idx_odd  <- seq(1, length(y), by = 2)
