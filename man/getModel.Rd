@@ -24,6 +24,7 @@ getModel(
   iq_em_max_iter = 60,
   iq_em_tol = 0.001,
   iq_em_mc_tol = 0.02,
+  iq_em_step = c("fixedpoint", "recursion"),
   adaptive_beta = TRUE,
   lambda_beta2_a = 1,
   lambda_beta2_b = 0.05,
@@ -85,7 +86,13 @@ An intercept column is added internally and assigned its own weakly informative 
 longer used in the \code{adaptive_lasso} or \code{het_group_lasso} prior
 construction.}
 
-\item{eps_w}{Positive scalar added to pilot estimates for numerical stability
+\item{eps_w}{Positive scalar FLOOR on the pilot adjacent-difference used in the
+adaptive IQ weight. Appendix C / manuscript Eq. (15) define
+w_{q,j} = |gamma^pilot_{q,j} - gamma^pilot_{q-1,j}|^{-1}; this floor reproduces
+that exactly whenever the pilot difference is at least eps_w, and only caps the
+weight at 1/eps_w for degenerate (near-zero) differences. Before 0.6.1 the code
+used (diff + eps_w)^{-1}, which perturbed EVERY weight rather than only the
+degenerate ones
 in the IQ shrinkage weights (default 1e-6).}
 
 \item{c_sigma}{Positive scalar scaling factor for the base scale (default 1.0).}
@@ -165,6 +172,15 @@ floor} and stops, rather than burning the remaining refits chasing a tolerance
 the E-step cannot deliver. This is recorded in \code{iq_em$note} and
 \code{iq_em$stop_reason}. Tighten the floor by raising
 \code{laplace_n_samples}, not by lowering \code{iq_em_tol}. Set to 0 to disable.}
+
+\item{iq_em_step}{How \eqn{\lambda_{iq}^2} is updated after each refit.
+\code{"fixedpoint"} (default, the behaviour since 0.5.2 and Eq. (C.8) of the
+manuscript) jumps to the fixed point \eqn{(N/\bar S)^2} of the M-step recursion.
+\code{"recursion"} iterates the M-step recursion of Appendix C as written,
+\eqn{\lambda^2_{s+1} = 2N\lambda^2_s/(\lambda_s \bar S + N)}, which has the same
+fixed point but moves only part of the way per refit; use it when the
+fixed-point update cycles between a fused and an unfused solution (few blocks).
+Needs more refits, so raise \code{iq_em_max_iter} accordingly.}
 
 \item{adaptive_beta}{Logical; if TRUE (default), the beta-side shrinkage level
 \eqn{\lambda_\beta^2} is learned from data for LASSO-type priors. If FALSE,

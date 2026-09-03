@@ -14,7 +14,8 @@ plotQuantileProcess(
   xlab = "time",
   ylab = "value",
   show_onset = TRUE,
-  show_located = TRUE
+  show_located = TRUE,
+  basis = NULL
 )
 }
 \arguments{

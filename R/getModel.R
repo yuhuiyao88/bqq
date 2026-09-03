@@ -75,24 +75,32 @@
   total / n_comp
 }
 
-# One update of lambda_iq2.
-#   "em"         : the EM recursion above (monotone in theory for an exact E-step).
-#   "fixedpoint" : jump straight to the fixed point (N/Sbar)^2. Same limit, far
-#                  fewer refits, but it is NOT the EM iteration.
-# M-step for lambda_iq2.  The EM recursion is
-#     lambda2_{s+1} = 2 N lambda2_s / (lambda_s Sbar + N),
-# whose fixed point solves lambda Sbar = N, i.e. lambda2 = (N / Sbar)^2.  We jump
-# straight there.  Both routes converge to the SAME value from any start (checked
-# from 1e-4, 1 and 1e6), but the creeping form needs ~44 refits where this needs 1,
-# and each refit is a full model fit.  The creeping form's only advantage is
-# monotone ascent under an EXACT E-step, and this E-step is Monte-Carlo from
-# Laplace draws, so that guarantee does not hold here either.  Removed in 0.5.2.
-#
-# Note the OUTER loop still iterates: Sbar is recomputed from a refit at the new
-# lambda, so this is a fixed-point iteration on Sbar(lambda), not a one-step solve.
-.bqq_iq_em_step <- function(lambda_iq2, Sbar, N) {
+# One update of lambda_iq2 (manuscript Appendix C).
+#   "recursion"  : the M-step recursion, Eq. (C.8),
+#                    lambda2_{s+1} = 2 N lambda2_s / (lambda_s Sbar + N).
+#                  DEFAULT since 0.6.3.
+#   "fixedpoint" : its fixed point, Eq. (C.9): lambda2 = (N / Sbar)^2. The default
+#                  from 0.5.2 to 0.6.2.
+# Both have the same fixed point. With eta = dlogSbar/dlogLambda at the fixed
+# point, the recursion's derivative in lambda2 is 1 - (1+eta)/4 (converges for
+# -1 < eta < 7) and the fixed-point jump's is -eta (converges only for |eta| < 1).
+# When Sbar hardly depends on lambda (many blocks) the jump wins on iterations
+# (1 versus ~44); with few blocks Sbar switches between a fused and an unfused
+# solution, eta exceeds 1, and the jump cycles (ARCOS, r = 5 and 10, 2026-09-02).
+# The outer loop recomputes Sbar from a fit at the updated lambda each iteration.
+.bqq_iq_em_step <- function(lambda_iq2, Sbar, N, step = c("recursion", "fixedpoint")) {
+  step <- match.arg(step)
   if (!is.finite(Sbar) || !is.finite(lambda_iq2) || N <= 0) return(NA_real_)
   if (Sbar <= 0) return(NA_real_)          # no fusion signal; caller keeps current value
+  if (step == "recursion") {
+    # Appendix C, Eq. (C.8): the M-step recursion (C.7) with (C.6) substituted,
+    #   lambda2_{s+1} = 2 N lambda2_s / (lambda_s Sbar + N),
+    # named the primary update in the manuscript; its fixed point is Eq. (C.9). It has the
+    # same fixed point but moves only part of the way each iteration, which keeps the
+    # iteration from leaping across a fused/unfused boundary and cycling (seen at
+    # r = 5 and r = 10 blocks on the ARCOS series, 2026-09-02).
+    return(2 * N * lambda_iq2 / (sqrt(lambda_iq2) * Sbar + N))
+  }
   (N / Sbar)^2
 }
 
@@ -221,12 +229,19 @@
 #'   suffer that collapse. Each EM iteration is a \strong{full refit}, so
 #'   \code{adaptive_iq = TRUE} costs up to \code{iq_em_max_iter} times a single fit.
 #' @param iq_em_max_iter Maximum number of EM iterations (refits) when
-#'   \code{adaptive_iq = TRUE} (default 60). Since 0.5.2 the M-step jumps straight
-#'   to its fixed point, so a converging run typically needs only a handful of
-#'   refits; the outer loop still iterates because \eqn{\bar S} is recomputed from
-#'   a refit at the updated \eqn{\lambda}.
+#'   \code{adaptive_iq = TRUE} (default 60). Each iteration recomputes \eqn{\bar S}
+#'   from a fit at the updated \eqn{\lambda}; with the default
+#'   \code{iq_em_step = "recursion"} the update moves part of the way toward the
+#'   fixed point at each iteration, so allow several dozen iterations.
 #' @param iq_em_tol Relative-change tolerance on \eqn{\lambda_{iq}^2} for declaring EM
 #'   convergence (default 1e-3).
+#' @param iq_em_step How \eqn{\lambda_{iq}^2} is updated at each iteration.
+#'   \code{"recursion"} (default since 0.6.3, Eq. (C.8) of the manuscript) iterates
+#'   the M-step recursion \eqn{\lambda^2_{s+1} = 2N\lambda^2_s/(\lambda_s \bar S + N)}.
+#'   \code{"fixedpoint"} (the behaviour from 0.5.2 to 0.6.2, Eq. (C.9)) jumps to its
+#'   fixed point \eqn{(N/\bar S)^2} at every iteration; it needs fewer iterations when
+#'   \eqn{\bar S} hardly depends on \eqn{\lambda} but cycles between a fused and an
+#'   unfused solution when it does (few blocks).
 #' @param iq_em_mc_tol Monte-Carlo noise-floor tolerance (default 0.02). The E-step
 #'   estimates \eqn{\bar S} from a finite set of Laplace draws, so
 #'   \eqn{\lambda_{iq}^2} cannot settle more tightly than the sampling noise in
@@ -406,6 +421,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
                         iq_em_max_iter = 60,
                         iq_em_tol = 1e-3,
                         iq_em_mc_tol = 0.02,
+                        iq_em_step = c("recursion", "fixedpoint"),
                         adaptive_beta = TRUE,
                         lambda_beta2_a = 1, lambda_beta2_b = 0.05,
                         lambda_beta2_fixed = 1,
@@ -1611,9 +1627,10 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
   # lambda_iq2: EM across refits, or a single fit at the supplied value
   # ------------------------------------------------------------------
   n_iq_diff <- .bqq_iq_n_diff(r, p_slope, m)
+  iq_em_step <- match.arg(iq_em_step)
   iq_em <- list(
     adaptive        = isTRUE(adaptive_iq),
-    update          = "fixedpoint",
+    update          = iq_em_step,
     n_diff          = n_iq_diff,
     lambda_iq2      = lambda_iq2,
     lambda_iq2_next = NA_real_,
@@ -1648,7 +1665,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
       draws <- .bqq_iq_draws(res)
       Sbar <- if (is.null(draws)) NA_real_ else
         .bqq_iq_Sbar(draws, w_iq_gamma, w_iq_beta, r, p_slope, m)
-      nxt <- .bqq_iq_em_step(cur, Sbar, n_iq_diff)
+      nxt <- .bqq_iq_em_step(cur, Sbar, n_iq_diff, step = iq_em_step)
       rel <- if (is.finite(nxt)) abs(nxt - cur) / max(cur, .Machine$double.eps) else NA_real_
 
       tr <- rbind(tr, data.frame(
