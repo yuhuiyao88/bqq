@@ -24,7 +24,8 @@ getModel(
   iq_em_max_iter = 60,
   iq_em_tol = 0.001,
   iq_em_mc_tol = 0.02,
-  iq_em_step = c("fixedpoint", "recursion"),
+  iq_em_step = c("hybrid", "recursion", "fixedpoint"),
+  iq_em_switch_tol = 0.5,
   adaptive_beta = TRUE,
   lambda_beta2_a = 1,
   lambda_beta2_b = 0.05,
@@ -153,10 +154,9 @@ recursion and must be strictly positive (default 1).}
   \code{adaptive_iq = TRUE} costs up to \code{iq_em_max_iter} times a single fit.}
 
 \item{iq_em_max_iter}{Maximum number of EM iterations (refits) when
-\code{adaptive_iq = TRUE} (default 60). Since 0.5.2 the M-step jumps straight
-to its fixed point, so a converging run typically needs only a handful of
-refits; the outer loop still iterates because \eqn{\bar S} is recomputed from
-a refit at the updated \eqn{\lambda}.}
+\code{adaptive_iq = TRUE} (default 60). Each iteration recomputes \eqn{\bar S}
+from a fit at the updated \eqn{\lambda}. The fixed-point update usually needs a
+handful of iterations; after a switch to the recursion, allow several dozen.}
 
 \item{iq_em_tol}{Relative-change tolerance on \eqn{\lambda_{iq}^2} for declaring EM
 convergence (default 1e-3).}
@@ -173,14 +173,22 @@ the E-step cannot deliver. This is recorded in \code{iq_em$note} and
 \code{iq_em$stop_reason}. Tighten the floor by raising
 \code{laplace_n_samples}, not by lowering \code{iq_em_tol}. Set to 0 to disable.}
 
-\item{iq_em_step}{How \eqn{\lambda_{iq}^2} is updated after each refit.
-\code{"fixedpoint"} (default, the behaviour since 0.5.2 and Eq. (C.8) of the
-manuscript) jumps to the fixed point \eqn{(N/\bar S)^2} of the M-step recursion.
-\code{"recursion"} iterates the M-step recursion of Appendix C as written,
-\eqn{\lambda^2_{s+1} = 2N\lambda^2_s/(\lambda_s \bar S + N)}, which has the same
-fixed point but moves only part of the way per refit; use it when the
-fixed-point update cycles between a fused and an unfused solution (few blocks).
-Needs more refits, so raise \code{iq_em_max_iter} accordingly.}
+\item{iq_em_step}{How \eqn{\lambda_{iq}^2} is updated at each iteration.
+\code{"fixedpoint"} (the behaviour from 0.5.2 to 0.6.2, Eq. (C.9) of the
+manuscript) jumps to the fixed point \eqn{(N/\bar S)^2} of the M-step recursion at
+every iteration; it needs few iterations when \eqn{\bar S} hardly depends on
+\eqn{\lambda} but cycles between a fused and an unfused solution when it does
+(few blocks). \code{"recursion"} (Eq. (C.8)) iterates the M-step recursion
+\eqn{\lambda^2_{s+1} = 2N\lambda^2_s/(\lambda_s \bar S + N)}, which moves only part
+of the way per iteration and does not cycle, but needs many iterations.
+\code{"hybrid"} (default since 0.6.3) starts with \code{"fixedpoint"} and switches
+to \code{"recursion"} for the remaining iterations the first time the update
+reverses direction by a relative change of at least \code{iq_em_switch_tol};
+\code{iq_em$switched_at} records the iteration.}
+
+\item{iq_em_switch_tol}{Relative change that counts as an oscillation for the
+\code{"hybrid"} switch (default 0.5). Reversals smaller than this are left to
+the Monte-Carlo floor rule of \code{iq_em_mc_tol}.}
 
 \item{adaptive_beta}{Logical; if TRUE (default), the beta-side shrinkage level
 \eqn{\lambda_\beta^2} is learned from data for LASSO-type priors. If FALSE,

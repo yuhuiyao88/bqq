@@ -78,9 +78,11 @@
 # One update of lambda_iq2 (manuscript Appendix C).
 #   "recursion"  : the M-step recursion, Eq. (C.8),
 #                    lambda2_{s+1} = 2 N lambda2_s / (lambda_s Sbar + N).
-#                  DEFAULT since 0.6.3.
 #   "fixedpoint" : its fixed point, Eq. (C.9): lambda2 = (N / Sbar)^2. The default
 #                  from 0.5.2 to 0.6.2.
+#   "hybrid"     : DEFAULT since 0.6.3. Fixed point until the update reverses direction
+#                  by a relative move >= iq_em_switch_tol, then the recursion (getModel
+#                  loop). Fast where the jump converges, stable where it would cycle.
 # Both have the same fixed point. With eta = dlogSbar/dlogLambda at the fixed
 # point, the recursion's derivative in lambda2 is 1 - (1+eta)/4 (converges for
 # -1 < eta < 7) and the fixed-point jump's is -eta (converges only for |eta| < 1).
@@ -88,7 +90,7 @@
 # (1 versus ~44); with few blocks Sbar switches between a fused and an unfused
 # solution, eta exceeds 1, and the jump cycles (ARCOS, r = 5 and 10, 2026-09-02).
 # The outer loop recomputes Sbar from a fit at the updated lambda each iteration.
-.bqq_iq_em_step <- function(lambda_iq2, Sbar, N, step = c("recursion", "fixedpoint")) {
+.bqq_iq_em_step <- function(lambda_iq2, Sbar, N, step = c("fixedpoint", "recursion")) {
   step <- match.arg(step)
   if (!is.finite(Sbar) || !is.finite(lambda_iq2) || N <= 0) return(NA_real_)
   if (Sbar <= 0) return(NA_real_)          # no fusion signal; caller keeps current value
@@ -230,18 +232,25 @@
 #'   \code{adaptive_iq = TRUE} costs up to \code{iq_em_max_iter} times a single fit.
 #' @param iq_em_max_iter Maximum number of EM iterations (refits) when
 #'   \code{adaptive_iq = TRUE} (default 60). Each iteration recomputes \eqn{\bar S}
-#'   from a fit at the updated \eqn{\lambda}; with the default
-#'   \code{iq_em_step = "recursion"} the update moves part of the way toward the
-#'   fixed point at each iteration, so allow several dozen iterations.
+#'   from a fit at the updated \eqn{\lambda}. The fixed-point update usually needs a
+#'   handful of iterations; after a switch to the recursion, allow several dozen.
 #' @param iq_em_tol Relative-change tolerance on \eqn{\lambda_{iq}^2} for declaring EM
 #'   convergence (default 1e-3).
 #' @param iq_em_step How \eqn{\lambda_{iq}^2} is updated at each iteration.
-#'   \code{"recursion"} (default since 0.6.3, Eq. (C.8) of the manuscript) iterates
-#'   the M-step recursion \eqn{\lambda^2_{s+1} = 2N\lambda^2_s/(\lambda_s \bar S + N)}.
-#'   \code{"fixedpoint"} (the behaviour from 0.5.2 to 0.6.2, Eq. (C.9)) jumps to its
-#'   fixed point \eqn{(N/\bar S)^2} at every iteration; it needs fewer iterations when
-#'   \eqn{\bar S} hardly depends on \eqn{\lambda} but cycles between a fused and an
-#'   unfused solution when it does (few blocks).
+#'   \code{"fixedpoint"} (the behaviour from 0.5.2 to 0.6.2, Eq. (C.9) of the
+#'   manuscript) jumps to the fixed point \eqn{(N/\bar S)^2} of the M-step recursion at
+#'   every iteration; it needs few iterations when \eqn{\bar S} hardly depends on
+#'   \eqn{\lambda} but cycles between a fused and an unfused solution when it does
+#'   (few blocks). \code{"recursion"} (Eq. (C.8)) iterates the M-step recursion
+#'   \eqn{\lambda^2_{s+1} = 2N\lambda^2_s/(\lambda_s \bar S + N)}, which moves only part
+#'   of the way per iteration and does not cycle, but needs many iterations.
+#'   \code{"hybrid"} (default since 0.6.3) starts with \code{"fixedpoint"} and switches
+#'   to \code{"recursion"} for the remaining iterations the first time the update
+#'   reverses direction by a relative change of at least \code{iq_em_switch_tol};
+#'   \code{iq_em$switched_at} records the iteration.
+#' @param iq_em_switch_tol Relative change that counts as an oscillation for the
+#'   \code{"hybrid"} switch (default 0.5). Reversals smaller than this are left to
+#'   the Monte-Carlo floor rule of \code{iq_em_mc_tol}.
 #' @param iq_em_mc_tol Monte-Carlo noise-floor tolerance (default 0.02). The E-step
 #'   estimates \eqn{\bar S} from a finite set of Laplace draws, so
 #'   \eqn{\lambda_{iq}^2} cannot settle more tightly than the sampling noise in
@@ -421,7 +430,8 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
                         iq_em_max_iter = 60,
                         iq_em_tol = 1e-3,
                         iq_em_mc_tol = 0.02,
-                        iq_em_step = c("recursion", "fixedpoint"),
+                        iq_em_step = c("hybrid", "recursion", "fixedpoint"),
+                        iq_em_switch_tol = 0.5,
                         adaptive_beta = TRUE,
                         lambda_beta2_a = 1, lambda_beta2_b = 0.05,
                         lambda_beta2_fixed = 1,
@@ -1628,9 +1638,11 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
   # ------------------------------------------------------------------
   n_iq_diff <- .bqq_iq_n_diff(r, p_slope, m)
   iq_em_step <- match.arg(iq_em_step)
+  iq_em_mode <- if (iq_em_step == "hybrid") "fixedpoint" else iq_em_step
   iq_em <- list(
     adaptive        = isTRUE(adaptive_iq),
     update          = iq_em_step,
+    switched_at     = NA_integer_,
     n_diff          = n_iq_diff,
     lambda_iq2      = lambda_iq2,
     lambda_iq2_next = NA_real_,
@@ -1665,11 +1677,11 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
       draws <- .bqq_iq_draws(res)
       Sbar <- if (is.null(draws)) NA_real_ else
         .bqq_iq_Sbar(draws, w_iq_gamma, w_iq_beta, r, p_slope, m)
-      nxt <- .bqq_iq_em_step(cur, Sbar, n_iq_diff, step = iq_em_step)
+      nxt <- .bqq_iq_em_step(cur, Sbar, n_iq_diff, step = iq_em_mode)
       rel <- if (is.finite(nxt)) abs(nxt - cur) / max(cur, .Machine$double.eps) else NA_real_
 
       tr <- rbind(tr, data.frame(
-        iter = s, lambda_iq2 = lam_used, lambda_iq = sqrt(lam_used),
+        iter = s, step = iq_em_mode, lambda_iq2 = lam_used, lambda_iq = sqrt(lam_used),
         Sbar = Sbar, lambda_iq2_next = nxt, rel_change = rel
       ))
       if (verbose) {
@@ -1693,7 +1705,26 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
       # Monte-Carlo floor: direction reversals with only small moves mean the
       # E-step noise, not the recursion, is now driving lambda_iq2.
       sgn <- sign(nxt - cur)
-      if (!is.na(prev_sign) && sgn != 0L && sgn == -prev_sign) flips <- flips + 1L
+      reversed <- !is.na(prev_sign) && sgn != 0L && sgn == -prev_sign
+      # Hybrid rule: the fixed-point update (C.9) is kept until it reverses direction
+      # by a large relative move, i.e. it has started to cycle between a fused and an
+      # unfused solution; from then on the recursion (C.8) is used, which moves only
+      # part of the way per iteration and settles.
+      if (iq_em_step == "hybrid" && iq_em_mode == "fixedpoint" && reversed &&
+          is.finite(rel) && rel >= iq_em_switch_tol) {
+        iq_em_mode <- "recursion"
+        iq_em$switched_at <- s
+        nxt <- .bqq_iq_em_step(cur, Sbar, n_iq_diff, step = "recursion")
+        rel <- abs(nxt - cur) / max(cur, .Machine$double.eps)
+        tr$step[nrow(tr)] <- "fixedpoint->recursion"
+        tr$lambda_iq2_next[nrow(tr)] <- nxt; tr$rel_change[nrow(tr)] <- rel
+        sgn <- sign(nxt - cur)
+        if (verbose) message(sprintf("[iq-EM %02d] oscillation (relative move %.3g): switching to the recursion", s, tr$rel_change[nrow(tr)]))
+        flips <- 0L; prev_sign <- NA_integer_; recent_rel <- numeric(0)
+        cur <- nxt
+        next
+      }
+      if (reversed) flips <- flips + 1L
       else if (sgn != 0L) flips <- 0L
       if (sgn != 0L) prev_sign <- sgn
       recent_rel <- c(recent_rel, rel)
