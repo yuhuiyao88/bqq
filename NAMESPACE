@@ -3,6 +3,7 @@
 export(cv_copss_grid)
 export(cv_copss_map)
 export(cv_copss_mcmc)
+export(cv_winner_init)
 export(detectChangepoints_gamma)
 export(getEta)
 export(getGradualDrift)

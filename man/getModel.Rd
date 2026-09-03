@@ -19,7 +19,7 @@ getModel(
   beta0_scale = NULL,
   beta_sd = 1,
   lambda_nc = 2,
-  lambda_iq2 = 1,
+  lambda_iq2 = NULL,
   adaptive_iq = TRUE,
   iq_em_max_iter = 60,
   iq_em_tol = 0.001,
@@ -44,6 +44,7 @@ getModel(
   verbose = FALSE,
   map_hessian = TRUE,
   map_init = c("pilot", "prior_center", "random"),
+  map_init_values = NULL,
   map_tol_obj = 1e-12,
   map_tol_grad = 1e-08,
   map_tol_rel_grad = 100,
@@ -129,8 +130,11 @@ prior on the warm-up period with discount \code{a0 = 1/w} (Ibrahim and Chen
 
 \item{lambda_nc}{Positive scalar weight for the non-crossing penalty (larger is stricter).}
 
-\item{lambda_iq2}{Non-negative scalar, the \strong{squared} interquantile (IQ)
-shrinkage weight \eqn{\lambda_{iq}^2}. The penalty applied to the target is
+\item{lambda_iq2}{\code{NULL} (default) or a non-negative scalar, the \strong{squared}
+interquantile (IQ) shrinkage weight \eqn{\lambda_{iq}^2}. \code{NULL} with
+\code{adaptive_iq = TRUE} starts the EM at the pilot-scale value
+\eqn{\lambda_{iq} = r(m-1)}, the fixed point of the M-step evaluated at the pilot
+fit (the Park and Casella 2008 starting rule); \code{NULL} without the EM means 1. The penalty applied to the target is
 \eqn{\sqrt{\lambda_{iq}^2}\sum_q |\gamma_q - \gamma_{q-1}|}, i.e. the effective
 L1 fusion rate is the \emph{square root} of this argument. This matches the
 \code{lambda_lasso2} / \code{lambda_beta2} convention, where the stored quantity
@@ -261,6 +265,13 @@ random initialization. Background: the logistic score saturates (clamped at
 |z| = 20) once a curve is ~20 bandwidths away from the data, leaving zero
 gradient; random inits can start (or wander) into such flat regions and
 produce runaway MAP modes.}
+
+\item{map_init_values}{Optional named list of starting values for the MAP
+optimization, typically \code{cv_winner_init(cv)}: the fold-averaged
+\code{beta0}, \code{betaX} and \code{gamma} of the cross-validation winner.
+Components whose dimensions match the model replace the corresponding entries
+of the \code{map_init} start; everything else keeps that start. Ignored for
+\code{fit_method = "mcmc"}.}
 
 \item{map_tol_obj, map_tol_grad, map_tol_rel_grad, map_tol_rel_obj, map_tol_param}{MAP optimizer (L-BFGS) tolerances. Defaults are deliberately tight
 (\code{map_tol_rel_grad = 1e2}, \code{map_tol_rel_obj = 1e2}, with

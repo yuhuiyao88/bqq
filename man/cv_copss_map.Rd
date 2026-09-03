@@ -14,7 +14,7 @@ cv_copss_map(
   prior_beta = "normal",
   prior_gamma = "spike_slab",
   map_iter = 2000,
-  lambda_iq2 = 1,
+  lambda_iq2 = NULL,
   adaptive_iq = TRUE,
   iq_em_max_iter = 30,
   cv_laplace_n_samples = 2000,

@@ -14,6 +14,8 @@ cv_copss_grid(
   base_args = list(),
   loss = c("score", "pinball"),
   seed = 123,
+  warm_start_iq = TRUE,
+  cv_iq_em_tol = 0.01,
   verbose = TRUE
 )
 }
@@ -38,11 +40,25 @@ are always computed and returned; \code{loss} decides which one fills
 
 \item{seed}{Random seed.}
 
+\item{warm_start_iq}{Logical (default TRUE). When the fits learn
+\eqn{\lambda_{iq}^2} by EM, each grid row starts its EM at the value the
+previous row converged to (mean over folds) instead of the pilot-scale start.
+The EM fixed point is data-determined, so the losses and the winner are the
+same up to the EM tolerance; the slow recursion phase is mostly skipped.}
+
+\item{cv_iq_em_tol}{Relative-change tolerance of the EM inside the tuning fits
+(default 1e-2, looser than \code{getModel}'s 1e-3). The validation scores that
+rank the grid differ by far more than a one-percent change in
+\eqn{\lambda_{iq}^2} moves them, so the tighter tolerance only costs
+iterations here. An \code{iq_em_tol} in \code{base_args} or the grid overrides it.}
+
 \item{verbose}{Print progress.}
 }
 \value{
 data.frame with grid and CV losses (see \code{cv_copss_map} for the
-  loss columns).
+  loss columns), plus \code{lambda_iq2_fit}, the mean over folds of the
+  \eqn{\lambda_{iq}^2} each row's EM settled on (NA when the EM is off), which a
+  caller can pass as the start of the final fit.
 }
 \description{
 More flexible version that accepts a data.frame grid of hyperparameters.
