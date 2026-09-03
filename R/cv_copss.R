@@ -131,7 +131,10 @@ score_loss <- function(y_val, qhat, taus, Z_val) {
 #' @param lambda_iq2 Squared IQ fusion weight passed to \code{getModel} (the effective
 #'   rate is its square root). Used as the fixed value when \code{adaptive_iq = FALSE},
 #'   or as the EM starting value when TRUE.
-#' @param adaptive_iq Logical; whether each CV fit learns \eqn{\lambda_{iq}^2} by EM.
+#' @param adaptive_iq Logical; whether each CV fit learns \eqn{\lambda_{iq}^2} by EM
+#'   (default TRUE since 0.6.3, the same estimation procedure as the final fit).
+#' @param cv_laplace_n_samples Laplace draws per CV fit when \code{adaptive_iq = TRUE}
+#'   (default 2000); the E-step only averages \eqn{|d|} over them.
 #'   Defaults to FALSE here, unlike \code{getModel}, because every EM iteration is a
 #'   full refit: leaving it on multiplies the cost of the CV sweep by up to
 #'   \code{iq_em_max_iter}. Set TRUE only if the IQ level must be retuned per fold.
@@ -178,8 +181,9 @@ cv_copss_map <- function(y, taus, H, X = NULL, w,
                             prior_gamma = "spike_slab",
                             map_iter = 2000,
                             lambda_iq2 = 1,
-                            adaptive_iq = FALSE,
+                            adaptive_iq = TRUE,
                             iq_em_max_iter = 30,
+                            cv_laplace_n_samples = 2000,
                             iq_em_tol = 1e-3,
                             iq_em_mc_tol = 0.02,
                             loss = c("score", "pinball"),
@@ -207,7 +211,8 @@ cv_copss_map <- function(y, taus, H, X = NULL, w,
         prior_beta = prior_beta,
         prior_gamma = prior_gamma,
         fit_method = "map",
-        map_hessian = FALSE,
+        map_hessian = isTRUE(adaptive_iq),        # the EM's E-step needs the Laplace draws
+        laplace_n_samples = cv_laplace_n_samples,
         map_iter = map_iter,
         seed = seed,
         verbose = FALSE
@@ -400,18 +405,21 @@ cv_copss_grid <- function(y, taus, H, X = NULL, w, grid,
     full_args["X"] <- list(X_tr)
     full_args["w"] <- list(w)
     full_args["fit_method"] <- list("map")
-    full_args["map_hessian"] <- list(FALSE)
     full_args["seed"] <- list(seed)
     full_args["verbose"] <- list(FALSE)
-    # getModel() defaults to adaptive_iq = TRUE, but each EM iteration is a FULL
-    # refit; inheriting that here would multiply the cost of the whole CV sweep
-    # by up to iq_em_max_iter. Default it off for tuning. Callers who really want
-    # the IQ level relearned per fold can override via base_args or a grid column.
-    full_args["adaptive_iq"] <- list(FALSE)
+    # Since 0.6.3 the tuning fits use the SAME estimation procedure as the final fit:
+    # adaptive_iq follows getModel()'s default (TRUE), so lambda_iq2 is learned by the
+    # EM inside every fold. Before 0.6.3 this function forced adaptive_iq = FALSE and
+    # map_hessian = FALSE for speed, which tuned the other hyperparameters at a fixed
+    # lambda_iq2 that the final fit then did not use.
+    full_args["laplace_n_samples"] <- list(2000L)   # E-step draws for tuning; base_args may override
 
     # Override with base_args then row_args
     for (nm in names(base_args_l)) full_args[nm] <- list(base_args_l[[nm]])
     for (nm in names(row_args)) full_args[nm] <- list(row_args[[nm]])
+    # The EM's E-step averages |d| over Laplace draws, so the Hessian is required
+    # whenever the EM is on; without the EM the tuning fit needs no draws.
+    full_args["map_hessian"] <- list(isTRUE(full_args[["adaptive_iq"]]))
 
     # Keep only valid arguments
     full_args <- full_args[intersect(names(full_args), names(gm_formals))]
@@ -611,11 +619,9 @@ cv_copss_mcmc <- function(y, taus, H, X = NULL, w, grid,
 
     full_args["seed"] <- list(seed)
     full_args["verbose"] <- list(FALSE)
-    # getModel() defaults to adaptive_iq = TRUE, but each EM iteration is a FULL
-    # refit; inheriting that here would multiply the cost of the whole CV sweep
-    # by up to iq_em_max_iter. Default it off for tuning. Callers who really want
-    # the IQ level relearned per fold can override via base_args or a grid column.
-    full_args["adaptive_iq"] <- list(FALSE)
+    # Since 0.6.3 adaptive_iq follows getModel()'s default (TRUE): the tuning fits use
+    # the same estimation procedure as the final fit. Each EM iteration is a full MCMC
+    # run here, so set iq_em_max_iter in base_args to bound the cost.
 
     # Override with base_args then row_args
     for (nm in names(base_args_l)) full_args[nm] <- list(base_args_l[[nm]])

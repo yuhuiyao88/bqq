@@ -15,8 +15,9 @@ cv_copss_map(
   prior_gamma = "spike_slab",
   map_iter = 2000,
   lambda_iq2 = 1,
-  adaptive_iq = FALSE,
+  adaptive_iq = TRUE,
   iq_em_max_iter = 30,
+  cv_laplace_n_samples = 2000,
   iq_em_tol = 0.001,
   iq_em_mc_tol = 0.02,
   loss = c("score", "pinball"),
@@ -45,13 +46,17 @@ cv_copss_map(
 rate is its square root). Used as the fixed value when \code{adaptive_iq = FALSE},
 or as the EM starting value when TRUE.}
 
-\item{adaptive_iq}{Logical; whether each CV fit learns \eqn{\lambda_{iq}^2} by EM.
-Defaults to FALSE here, unlike \code{getModel}, because every EM iteration is a
-full refit: leaving it on multiplies the cost of the CV sweep by up to
-\code{iq_em_max_iter}. Set TRUE only if the IQ level must be retuned per fold.}
+\item{adaptive_iq}{Logical; whether each CV fit learns \eqn{\lambda_{iq}^2} by EM
+(default TRUE since 0.6.3, the same estimation procedure as the final fit).}
 
 \item{iq_em_max_iter, iq_em_tol, iq_em_mc_tol}{EM controls forwarded to
 \code{getModel}; see there.}
+
+\item{cv_laplace_n_samples}{Laplace draws per CV fit when \code{adaptive_iq = TRUE}
+(default 2000); the E-step only averages \eqn{|d|} over them.
+Defaults to FALSE here, unlike \code{getModel}, because every EM iteration is a
+full refit: leaving it on multiplies the cost of the CV sweep by up to
+\code{iq_em_max_iter}. Set TRUE only if the IQ level must be retuned per fold.}
 
 \item{loss}{Validation loss used to rank the grid: \code{"score"} (default)
 is the exact unconstrained score-likelihood criterion of \code{score_loss}
