@@ -359,11 +359,15 @@ cv_copss_map <- function(y, taus, H, X = NULL, w,
 #'   are always computed and returned; \code{loss} decides which one fills
 #'   \code{train_loss}/\code{val_loss} and sorts the result.
 #' @param seed Random seed.
-#' @param warm_start_iq Logical (default TRUE). When the fits learn
-#'   \eqn{\lambda_{iq}^2} by EM, each grid row starts its EM at the value the
-#'   previous row converged to (mean over folds) instead of the pilot-scale start.
-#'   The EM fixed point is data-determined, so the losses and the winner are the
-#'   same up to the EM tolerance; the slow recursion phase is mostly skipped.
+#' @param warm_start_iq Logical (default FALSE). If TRUE, each grid row starts its EM
+#'   at the \eqn{\lambda_{iq}^2} the previous row converged to and each fold's
+#'   optimizer at that fold's previous-row MAP. OFF by default since 0.6.4: the
+#'   spike-and-slab posterior is multimodal, and a fit started at a neighbouring
+#'   row's solution stays in that row's mode (verified on the ARCOS series at
+#'   l = 182: rows became identical to seven digits and the tuning could no longer
+#'   separate the spike sd). Every tuning fit therefore starts from the pilot, as
+#'   the manuscript states; the warm start across EM iterations inside a fit
+#'   (\code{getModel(iq_em_warm = TRUE)}) is unaffected.
 #' @param cv_iq_em_tol Relative-change tolerance of the EM inside the tuning fits
 #'   (default 0.1; the final fit keeps \code{getModel}'s 1e-2). The folds only rank
 #'   the grid by validation score, and a fold's \eqn{\lambda_{iq}} within a few percent
@@ -392,7 +396,7 @@ cv_copss_grid <- function(y, taus, H, X = NULL, w, grid,
                               base_args = list(),
                               loss = c("score", "pinball"),
                               seed = 123,
-                              warm_start_iq = TRUE,
+                              warm_start_iq = FALSE,
                               cv_iq_em_tol = 0.1,
                               verbose = TRUE) {
 
