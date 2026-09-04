@@ -18,7 +18,7 @@ cv_copss_map(
   adaptive_iq = TRUE,
   iq_em_max_iter = 30,
   cv_laplace_n_samples = 2000,
-  iq_em_tol = 0.001,
+  iq_em_tol = 0.1,
   iq_em_mc_tol = 0.02,
   loss = c("score", "pinball"),
   seed = 123,

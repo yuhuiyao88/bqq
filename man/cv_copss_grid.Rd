@@ -15,7 +15,7 @@ cv_copss_grid(
   loss = c("score", "pinball"),
   seed = 123,
   warm_start_iq = TRUE,
-  cv_iq_em_tol = 0.01,
+  cv_iq_em_tol = 0.1,
   verbose = TRUE
 )
 }
@@ -47,10 +47,10 @@ The EM fixed point is data-determined, so the losses and the winner are the
 same up to the EM tolerance; the slow recursion phase is mostly skipped.}
 
 \item{cv_iq_em_tol}{Relative-change tolerance of the EM inside the tuning fits
-(default 1e-2, looser than \code{getModel}'s 1e-3). The validation scores that
-rank the grid differ by far more than a one-percent change in
-\eqn{\lambda_{iq}^2} moves them, so the tighter tolerance only costs
-iterations here. An \code{iq_em_tol} in \code{base_args} or the grid overrides it.}
+(default 0.1; the final fit keeps \code{getModel}'s 1e-2). The folds only rank
+the grid by validation score, and a fold's \eqn{\lambda_{iq}} within a few percent
+of its limit cannot change that ranking. An \code{iq_em_tol} in \code{base_args}
+or the grid overrides it.}
 
 \item{verbose}{Print progress.}
 }

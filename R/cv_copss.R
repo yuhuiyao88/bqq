@@ -184,7 +184,7 @@ cv_copss_map <- function(y, taus, H, X = NULL, w,
                             adaptive_iq = TRUE,
                             iq_em_max_iter = 30,
                             cv_laplace_n_samples = 2000,
-                            iq_em_tol = 1e-3,
+                            iq_em_tol = 0.1,
                             iq_em_mc_tol = 0.02,
                             loss = c("score", "pinball"),
                             seed = 123,
@@ -365,10 +365,10 @@ cv_copss_map <- function(y, taus, H, X = NULL, w,
 #'   The EM fixed point is data-determined, so the losses and the winner are the
 #'   same up to the EM tolerance; the slow recursion phase is mostly skipped.
 #' @param cv_iq_em_tol Relative-change tolerance of the EM inside the tuning fits
-#'   (default 1e-2, looser than \code{getModel}'s 1e-3). The validation scores that
-#'   rank the grid differ by far more than a one-percent change in
-#'   \eqn{\lambda_{iq}^2} moves them, so the tighter tolerance only costs
-#'   iterations here. An \code{iq_em_tol} in \code{base_args} or the grid overrides it.
+#'   (default 0.1; the final fit keeps \code{getModel}'s 1e-2). The folds only rank
+#'   the grid by validation score, and a fold's \eqn{\lambda_{iq}} within a few percent
+#'   of its limit cannot change that ranking. An \code{iq_em_tol} in \code{base_args}
+#'   or the grid overrides it.
 #' @param verbose Print progress.
 #'
 #' @return data.frame with grid and CV losses (see \code{cv_copss_map} for the
@@ -393,7 +393,7 @@ cv_copss_grid <- function(y, taus, H, X = NULL, w, grid,
                               loss = c("score", "pinball"),
                               seed = 123,
                               warm_start_iq = TRUE,
-                              cv_iq_em_tol = 1e-2,
+                              cv_iq_em_tol = 0.1,
                               verbose = TRUE) {
 
   loss <- match.arg(loss)
@@ -402,7 +402,7 @@ cv_copss_grid <- function(y, taus, H, X = NULL, w, grid,
   gm_formals <- as.list(formals(getModel))
   .bqq_check_tuning_names(names(grid), names(base_args), names(gm_formals))
 
-  fit_and_score <- function(idx_train, idx_val, row_args) {
+  fit_and_score <- function(idx_train, idx_val, row_args, init_values = NULL) {
     # Convert factors to character
     row_args <- lapply(row_args, function(x) if (is.factor(x)) as.character(x) else x)
     base_args_l <- lapply(base_args, function(x) if (is.factor(x)) as.character(x) else x)
@@ -432,6 +432,8 @@ cv_copss_grid <- function(y, taus, H, X = NULL, w, grid,
     # Override with base_args then row_args
     for (nm in names(base_args_l)) full_args[nm] <- list(base_args_l[[nm]])
     for (nm in names(row_args)) full_args[nm] <- list(row_args[[nm]])
+    if (!is.null(init_values) && is.null(full_args[["map_init_values"]]))
+      full_args["map_init_values"] <- list(init_values)
     # The EM's E-step averages |d| over Laplace draws, so the Hessian is required
     # whenever the EM is on; without the EM the tuning fit needs no draws.
     full_args["map_hessian"] <- list(isTRUE(full_args[["adaptive_iq"]]))
@@ -535,15 +537,18 @@ cv_copss_grid <- function(y, taus, H, X = NULL, w, grid,
                     k, nrow(grid), hp_str, loss,
                     (a[[tr_sel]] + b[[tr_sel]]) / 2, (a[[val_sel]] + b[[val_sel]]) / 2))
   }
-  prev <- NULL
+  prev <- NULL; init_a <- NULL; init_b <- NULL
   for (k in seq_len(nrow(grid))) {
     row_args <- as.list(grid[k, , drop = FALSE])
-    # warm start: row k begins its EM where row k-1 settled (mean over folds)
+    # warm start: row k begins its EM where row k-1 settled (mean over folds), and each
+    # fold's optimizer starts at that fold's MAP from row k-1
     if (isTRUE(warm_start_iq) && !is.null(prev) && is.finite(prev) && prev > 0 &&
         is.null(row_args$lambda_iq2))
       row_args$lambda_iq2 <- prev
-    a <- fit_and_score(idx_odd, idx_even, row_args)
-    b <- fit_and_score(idx_even, idx_odd, row_args)
+    a <- fit_and_score(idx_odd, idx_even, row_args, init_values = if (isTRUE(warm_start_iq)) init_a else NULL)
+    b <- fit_and_score(idx_even, idx_odd, row_args, init_values = if (isTRUE(warm_start_iq)) init_b else NULL)
+    if (!is.null(a$map_par)) init_a <- .bqq_par_to_init(a$map_par)
+    if (!is.null(b$map_par)) init_b <- .bqq_par_to_init(b$map_par)
     train_pinballs[k] <- (a$train_pinball + b$train_pinball) / 2
     val_pinballs[k]   <- (a$val_pinball + b$val_pinball) / 2
     train_scores[k]   <- (a$train_score + b$train_score) / 2
@@ -589,6 +594,12 @@ cv_winner_init <- function(cv, k = 1L) {
   if (!length(pars)) return(NULL)
   nm <- Reduce(intersect, lapply(pars, names))
   avg <- Reduce(`+`, lapply(pars, function(p) p[nm])) / length(pars)
+  .bqq_par_to_init(avg)
+}
+
+# Named MAP parameter vector ("beta0[1]", "gamma[2,3]", ...) -> list(beta0, betaX, gamma)
+.bqq_par_to_init <- function(avg) {
+  nm <- names(avg)
   pick <- function(prefix) {
     v <- avg[grep(paste0("^", prefix, "\\["), nm)]
     if (!length(v)) return(NULL)

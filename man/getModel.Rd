@@ -22,9 +22,10 @@ getModel(
   lambda_iq2 = NULL,
   adaptive_iq = TRUE,
   iq_em_max_iter = 60,
-  iq_em_tol = 0.001,
+  iq_em_tol = 0.01,
   iq_em_mc_tol = 0.02,
   iq_em_step = c("hybrid", "recursion", "fixedpoint"),
+  iq_em_warm = TRUE,
   iq_em_switch_tol = 0.5,
   adaptive_beta = TRUE,
   lambda_beta2_a = 1,
@@ -163,7 +164,7 @@ from a fit at the updated \eqn{\lambda}. The fixed-point update usually needs a
 handful of iterations; after a switch to the recursion, allow several dozen.}
 
 \item{iq_em_tol}{Relative-change tolerance on \eqn{\lambda_{iq}^2} for declaring EM
-convergence (default 1e-3).}
+convergence (default 1e-2 since 0.6.3; was 1e-3).}
 
 \item{iq_em_mc_tol}{Monte-Carlo noise-floor tolerance (default 0.02). The E-step
 estimates \eqn{\bar S} from a finite set of Laplace draws, so
@@ -189,6 +190,10 @@ of the way per iteration and does not cycle, but needs many iterations.
 to \code{"recursion"} for the remaining iterations the first time the update
 reverses direction by a relative change of at least \code{iq_em_switch_tol};
 \code{iq_em$switched_at} records the iteration.}
+
+\item{iq_em_warm}{Logical (default TRUE). Start the MAP optimization of each EM
+iteration after the first at the previous iteration's solution instead of the
+\code{map_init} start. Same optimum, far fewer optimizer steps per iteration.}
 
 \item{iq_em_switch_tol}{Relative change that counts as an oscillation for the
 \code{"hybrid"} switch (default 0.5). Reversals smaller than this are left to

@@ -238,7 +238,7 @@
 #'   from a fit at the updated \eqn{\lambda}. The fixed-point update usually needs a
 #'   handful of iterations; after a switch to the recursion, allow several dozen.
 #' @param iq_em_tol Relative-change tolerance on \eqn{\lambda_{iq}^2} for declaring EM
-#'   convergence (default 1e-3).
+#'   convergence (default 1e-2 since 0.6.3; was 1e-3).
 #' @param iq_em_step How \eqn{\lambda_{iq}^2} is updated at each iteration.
 #'   \code{"fixedpoint"} (the behaviour from 0.5.2 to 0.6.2, Eq. (C.9) of the
 #'   manuscript) jumps to the fixed point \eqn{(N/\bar S)^2} of the M-step recursion at
@@ -251,6 +251,9 @@
 #'   to \code{"recursion"} for the remaining iterations the first time the update
 #'   reverses direction by a relative change of at least \code{iq_em_switch_tol};
 #'   \code{iq_em$switched_at} records the iteration.
+#' @param iq_em_warm Logical (default TRUE). Start the MAP optimization of each EM
+#'   iteration after the first at the previous iteration's solution instead of the
+#'   \code{map_init} start. Same optimum, far fewer optimizer steps per iteration.
 #' @param iq_em_switch_tol Relative change that counts as an oscillation for the
 #'   \code{"hybrid"} switch (default 0.5). Reversals smaller than this are left to
 #'   the Monte-Carlo floor rule of \code{iq_em_mc_tol}.
@@ -437,9 +440,10 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
                         lambda_iq2 = NULL,
                         adaptive_iq = TRUE,
                         iq_em_max_iter = 60,
-                        iq_em_tol = 1e-3,
+                        iq_em_tol = 1e-2,
                         iq_em_mc_tol = 0.02,
                         iq_em_step = c("hybrid", "recursion", "fixedpoint"),
+                        iq_em_warm = TRUE,
                         iq_em_switch_tol = 0.5,
                         adaptive_beta = TRUE,
                         lambda_beta2_a = 1, lambda_beta2_b = 0.05,
@@ -1575,7 +1579,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
   # repeatedly. EM sits OUTSIDE the fit: it updates lambda_iq2 between
   # refits and touches no Stan code.
   # ------------------------------------------------------------------
-  run_one_fit <- function(stan_data) {
+  run_one_fit <- function(stan_data, warm = NULL) {
     fit <- NULL
     map_fit <- NULL
     hessian <- NULL
@@ -1611,7 +1615,8 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
       seed = seed,
       verbose = verbose
     )
-    if (map_init != "random") opt_args$init <- init_used
+    if (!is.null(warm)) opt_args$init <- warm
+    else if (map_init != "random") opt_args$init <- init_used
     if (!is.null(map_tol_obj))       opt_args$tol_obj       <- map_tol_obj
     if (!is.null(map_tol_grad))      opt_args$tol_grad      <- map_tol_grad
     if (!is.null(map_tol_rel_grad))  opt_args$tol_rel_grad  <- map_tol_rel_grad
@@ -1682,6 +1687,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
   iq_em <- list(
     adaptive        = isTRUE(adaptive_iq),
     update          = iq_em_step,
+    warm_iterations = isTRUE(iq_em_warm),
     switched_at     = NA_integer_,
     n_diff          = n_iq_diff,
     lambda_iq2      = lambda_iq2,
@@ -1711,7 +1717,13 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
 
     for (s in seq_len(iq_em_max_iter)) {
       stan_data$lambda_iq2 <- cur
-      res <- run_one_fit(stan_data)
+      warm <- NULL
+      if (isTRUE(iq_em_warm) && s > 1L && fit_method == "map" && !is.null(res) &&
+          is.list(res$map$par)) {
+        keep <- intersect(names(res$map$par), names(init_used))
+        if (length(keep)) warm <- res$map$par[keep]
+      }
+      res <- run_one_fit(stan_data, warm = warm)
       lam_used <- cur
 
       draws <- .bqq_iq_draws(res)
@@ -1828,6 +1840,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
     y = y, H = H, X = X, taus = taus,
     hessian = hessian,
     fit_method = fit_method,
+    map_init_used = if (fit_method == "map") map_init_used else NA_character_,
     laplace_samples = laplace_samples,
     stan_data = stan_data,
     iq_em = iq_em
