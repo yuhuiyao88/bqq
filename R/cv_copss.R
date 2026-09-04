@@ -182,7 +182,7 @@ cv_copss_map <- function(y, taus, H, X = NULL, w,
                             map_iter = 2000,
                             lambda_iq2 = NULL,
                             adaptive_iq = TRUE,
-                            iq_em_max_iter = 30,
+                            iq_em_max_iter = 5,
                             cv_laplace_n_samples = 2000,
                             iq_em_tol = 0.1,
                             iq_em_mc_tol = 0.02,
@@ -373,6 +373,12 @@ cv_copss_map <- function(y, taus, H, X = NULL, w,
 #'   the grid by validation score, and a fold's \eqn{\lambda_{iq}} within a few percent
 #'   of its limit cannot change that ranking. An \code{iq_em_tol} in \code{base_args}
 #'   or the grid overrides it.
+#' @param cv_iq_em_max_iter Cap on EM iterations inside the tuning fits (default 5;
+#'   the final fit keeps \code{getModel}'s \code{iq_em_max_iter}). Every E-step
+#'   costs a Hessian, which is the dominant cost of a fit, and at
+#'   \code{cv_iq_em_tol = 0.1} the EM stops within 2 to 7 iterations on the study
+#'   problems, so the cap bounds the cost of the tuning fits without changing the
+#'   ranking. An \code{iq_em_max_iter} in \code{base_args} or the grid overrides it.
 #' @param verbose Print progress.
 #'
 #' @return data.frame with grid and CV losses (see \code{cv_copss_map} for the
@@ -398,6 +404,7 @@ cv_copss_grid <- function(y, taus, H, X = NULL, w, grid,
                               seed = 123,
                               warm_start_iq = FALSE,
                               cv_iq_em_tol = 0.1,
+                              cv_iq_em_max_iter = 5L,
                               verbose = TRUE) {
 
   loss <- match.arg(loss)
@@ -432,6 +439,7 @@ cv_copss_grid <- function(y, taus, H, X = NULL, w, grid,
     # lambda_iq2 that the final fit then did not use.
     full_args["laplace_n_samples"] <- list(2000L)   # E-step draws for tuning; base_args may override
     full_args["iq_em_tol"] <- list(cv_iq_em_tol)      # looser EM tolerance for tuning; base_args may override
+    full_args["iq_em_max_iter"] <- list(cv_iq_em_max_iter)   # cap on E-steps (each is a Hessian); base_args may override
 
     # Override with base_args then row_args
     for (nm in names(base_args_l)) full_args[nm] <- list(base_args_l[[nm]])

@@ -16,7 +16,7 @@ cv_copss_map(
   map_iter = 2000,
   lambda_iq2 = NULL,
   adaptive_iq = TRUE,
-  iq_em_max_iter = 30,
+  iq_em_max_iter = 5,
   cv_laplace_n_samples = 2000,
   iq_em_tol = 0.1,
   iq_em_mc_tol = 0.02,
