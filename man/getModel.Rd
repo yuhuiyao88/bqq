@@ -25,7 +25,7 @@ getModel(
   iq_em_tol = 0.01,
   iq_em_mc_tol = 0.02,
   iq_em_step = c("hybrid", "recursion", "fixedpoint"),
-  iq_em_warm = TRUE,
+  iq_em_warm = FALSE,
   iq_em_switch_tol = 0.5,
   adaptive_beta = TRUE,
   lambda_beta2_a = 1,
@@ -191,9 +191,13 @@ to \code{"recursion"} for the remaining iterations the first time the update
 reverses direction by a relative change of at least \code{iq_em_switch_tol};
 \code{iq_em$switched_at} records the iteration.}
 
-\item{iq_em_warm}{Logical (default TRUE). Start the MAP optimization of each EM
+\item{iq_em_warm}{Logical (default FALSE). Start the MAP optimization of each EM
 iteration after the first at the previous iteration's solution instead of the
-\code{map_init} start. Same optimum, far fewer optimizer steps per iteration.}
+\code{map_init} start. Off by default because the fused penalty places the
+MAP on kinks of the objective: restarted there, L-BFGS fails its first line
+search and returns the start unchanged, so the coefficients stop updating
+and only lambda_iq moves. Before 0.6.5 the option had no effect for
+\code{fit_method = "map"}; every EM iteration started from \code{map_init}.}
 
 \item{iq_em_switch_tol}{Relative change that counts as an oscillation for the
 \code{"hybrid"} switch (default 0.5). Reversals smaller than this are left to

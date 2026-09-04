@@ -251,9 +251,13 @@
 #'   to \code{"recursion"} for the remaining iterations the first time the update
 #'   reverses direction by a relative change of at least \code{iq_em_switch_tol};
 #'   \code{iq_em$switched_at} records the iteration.
-#' @param iq_em_warm Logical (default TRUE). Start the MAP optimization of each EM
+#' @param iq_em_warm Logical (default FALSE). Start the MAP optimization of each EM
 #'   iteration after the first at the previous iteration's solution instead of the
-#'   \code{map_init} start. Same optimum, far fewer optimizer steps per iteration.
+#'   \code{map_init} start. Off by default because the fused penalty places the
+#'   MAP on kinks of the objective: restarted there, L-BFGS fails its first line
+#'   search and returns the start unchanged, so the coefficients stop updating
+#'   and only lambda_iq moves. Before 0.6.5 the option had no effect for
+#'   \code{fit_method = "map"}; every EM iteration started from \code{map_init}.
 #' @param iq_em_switch_tol Relative change that counts as an oscillation for the
 #'   \code{"hybrid"} switch (default 0.5). Reversals smaller than this are left to
 #'   the Monte-Carlo floor rule of \code{iq_em_mc_tol}.
@@ -443,7 +447,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
                         iq_em_tol = 1e-2,
                         iq_em_mc_tol = 0.02,
                         iq_em_step = c("hybrid", "recursion", "fixedpoint"),
-                        iq_em_warm = TRUE,
+                        iq_em_warm = FALSE,
                         iq_em_switch_tol = 0.5,
                         adaptive_beta = TRUE,
                         lambda_beta2_a = 1, lambda_beta2_b = 0.05,
@@ -1650,7 +1654,8 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
       seed = seed,
       verbose = verbose
     )
-    if (map_init != "random") opt_args$init <- init_used
+    if (!is.null(warm)) opt_args$init <- warm
+    else if (map_init != "random") opt_args$init <- init_used
     if (!is.null(map_tol_obj))       opt_args$tol_obj       <- map_tol_obj
     if (!is.null(map_tol_grad))      opt_args$tol_grad      <- map_tol_grad
     if (!is.null(map_tol_rel_grad))  opt_args$tol_rel_grad  <- map_tol_rel_grad
@@ -1718,10 +1723,27 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
     for (s in seq_len(iq_em_max_iter)) {
       stan_data$lambda_iq2 <- cur
       warm <- NULL
-      if (isTRUE(iq_em_warm) && s > 1L && fit_method == "map" && !is.null(res) &&
-          is.list(res$map$par)) {
-        keep <- intersect(names(res$map$par), names(init_used))
-        if (length(keep)) warm <- res$map$par[keep]
+      # Until 0.6.5 this branch never fired for fit_method = "map": the MAP is
+      # returned as a named vector (as_vector = TRUE), so is.list() was FALSE, and
+      # the map branch of run_one_fit ignored `warm` anyway. Every fit therefore
+      # started from the pilot. Kept off by default: see the argument's help.
+      if (isTRUE(iq_em_warm) && s > 1L && fit_method == "map" && !is.null(res)) {
+        pv <- res$map$par
+        if (is.list(pv)) {
+          keep <- intersect(names(pv), names(init_used))
+          if (length(keep)) warm <- pv[keep]
+        } else if (is.numeric(pv) && !is.null(names(pv))) {
+          warm <- list()
+          for (nm in names(init_used)) {
+            idx <- which(startsWith(names(pv), paste0(nm, "[")))
+            tmpl <- init_used[[nm]]
+            if (length(idx) == length(tmpl)) {
+              v <- unname(pv[idx])
+              warm[[nm]] <- if (is.matrix(tmpl)) matrix(v, nrow(tmpl), ncol(tmpl)) else as.array(v)
+            }
+          }
+          if (!length(warm)) warm <- NULL
+        }
       }
       res <- run_one_fit(stan_data, warm = warm)
       lam_used <- cur
