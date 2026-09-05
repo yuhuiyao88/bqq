@@ -289,7 +289,16 @@ Rockova & George 2018; reuses \code{spike_sd}/\code{slab_sd} as Laplace scales).
 The \code{"adaptive_lasso"} option follows a Leng et al. (2014)-style hierarchy
 with coefficient-specific local shrinkage parameters. The
 \code{"het_group_lasso"} option combines group-level shrinkage with
-coefficient-level local scales, without pilot weights.}
+coefficient-level local scales, without pilot weights.
+Since 0.6.8 every LASSO-type prior is fitted with its normal-scale latents
+integrated out: \code{"lasso"} is the Laplace prior with rate
+\eqn{\lambda} (Park and Casella, 2008), \code{"group_lasso"} the multivariate
+Laplace \eqn{\lambda^m \exp(-\lambda \|\gamma_j\|_2)} of Kyung et al. (2010),
+\code{"adaptive_lasso"} the Laplace with local rate \eqn{\lambda_{q,j}} whose
+square keeps its gamma hyperprior, and \code{"het_group_lasso"} the Laplace
+with block rate \eqn{\sqrt{\omega_j}} whose Levy mixer stays a parameter. The
+MAP is therefore the mode of the marginal posterior; the joint mode over the
+scale latents does not exist (the density is unbounded as a scale tends to 0).}
 
 \item{beta_spike_sd, beta_slab_sd, beta_slab_pi_a, beta_slab_pi_b}{Spike-and-slab
 hyperparameters for \code{betaX}.}

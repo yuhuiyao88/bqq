@@ -255,7 +255,11 @@
   dinvgamma_log <- function(x, a, b) a * log(b) - lgamma(a) - (a + 1) * log(x) - b / x
   dlaplace_log  <- function(x, s) -log(2 * s) - abs(x) / s
   log_mix <- function(pi, l1, l2) { mx <- pmax(l1, l2); mx + log(pi * exp(l1 - mx) + (1 - pi) * exp(l2 - mx)) }
-  shape_grp <- (m + 1L) %/% 2L   # Stan's (m + 1) / 2 is INTEGER division for int m
+  # marginal group-LASSO prior of a column block G (m x k): lambda^m exp(-lambda ||g||) with its constant
+  dgrouplap_log <- function(G, lam) {
+    c_grp <- -0.5 * (m + 1) * log(2) - 0.5 * (m - 1) * log(2 * pi) - lgamma(0.5 * (m + 1))
+    sum(m * log(lam) - lam * sqrt(colSums(G^2)) + c_grp)
+  }
 
   # ---- log pi(gamma) ----
   lp_gamma <- 0
@@ -268,25 +272,21 @@
       eff <- ll2
     }
     if (pc == 1L) {
-      s2g <- gv("sigma2_gamma_group", r)
-      lp_gamma <- lp_gamma + sum(dgamma(s2g, shape = shape_grp, rate = 0.5 * eff, log = TRUE)) +
-        sum(dnorm(gamma, 0, matrix(sqrt(s2g), m, r, byrow = TRUE), log = TRUE))
+      lp_gamma <- lp_gamma + dgrouplap_log(gamma, sqrt(eff))
     } else if (pc == 2L) {
-      s2 <- gm("sigma2_gamma", m, r)
-      lp_gamma <- lp_gamma + sum(dexp(s2, rate = 0.5 * eff, log = TRUE)) + sum(dnorm(gamma, 0, sqrt(s2), log = TRUE))
+      lp_gamma <- lp_gamma + sum(dlaplace_log(gamma, 1 / sqrt(eff)))
     } else if (pc == 5L) {
-      l2l <- gm("lambda2_gamma_local", m, r); s2 <- gm("sigma2_gamma", m, r)
+      l2l <- gm("lambda2_gamma_local", m, r)
       lp_gamma <- lp_gamma + sum(dgamma(l2l, shape = sd$lambda_lasso2_a, rate = sd$lambda_lasso2_b, log = TRUE)) +
-        sum(dexp(s2, rate = 0.5 * l2l, log = TRUE)) + sum(dnorm(gamma, 0, sqrt(s2), log = TRUE))
+        sum(dlaplace_log(gamma, 1 / sqrt(l2l)))
     } else if (pc == 3L) {
       pi_s <- gs("pi_slab")
       lp_gamma <- lp_gamma + dbeta(pi_s, sd$slab_pi_a, sd$slab_pi_b, log = TRUE) +
         sum(log_mix(pi_s, dnorm(gamma, 0, sd$slab_sd, log = TRUE), dnorm(gamma, 0, sd$spike_sd, log = TRUE)))
     } else if (pc == 4L) {
-      om <- gv("omega_group", r); s2 <- gm("sigma2_gamma", m, r)
+      om <- gv("omega_group", r)
       lp_gamma <- lp_gamma + sum(dinvgamma_log(om, 0.5, 0.5 * eff)) +
-        sum(dexp(s2, rate = 0.5 * matrix(om, m, r, byrow = TRUE), log = TRUE)) +
-        sum(dnorm(gamma, 0, sqrt(s2), log = TRUE))
+        sum(dlaplace_log(gamma, 1 / sqrt(matrix(om, m, r, byrow = TRUE))))
     } else if (pc == 6L) {
       pi_s <- gs("pi_slab")
       lp_gamma <- lp_gamma + dbeta(pi_s, sd$slab_pi_a, sd$slab_pi_b, log = TRUE) +
@@ -307,25 +307,21 @@
     if (pb == 1L) {
       lp_eta0 <- lp_eta0 + sum(dnorm(betaX, 0, as.numeric(sd$beta_sd), log = TRUE))
     } else if (pb == 2L) {
-      s2 <- gm("sigma2_beta", m, px)
-      lp_eta0 <- lp_eta0 + sum(dexp(s2, rate = 0.5 * effb, log = TRUE)) + sum(dnorm(betaX, 0, sqrt(s2), log = TRUE))
+      lp_eta0 <- lp_eta0 + sum(dlaplace_log(betaX, 1 / sqrt(effb)))
     } else if (pb == 6L) {
-      l2l <- gm("lambda2_beta_local", m, px); s2 <- gm("sigma2_beta", m, px)
+      l2l <- gm("lambda2_beta_local", m, px)
       lp_eta0 <- lp_eta0 + sum(dgamma(l2l, shape = sd$lambda_beta2_a, rate = sd$lambda_beta2_b, log = TRUE)) +
-        sum(dexp(s2, rate = 0.5 * l2l, log = TRUE)) + sum(dnorm(betaX, 0, sqrt(s2), log = TRUE))
+        sum(dlaplace_log(betaX, 1 / sqrt(l2l)))
     } else if (pb == 3L) {
       pi_b <- gs("pi_slab_beta")
       lp_eta0 <- lp_eta0 + dbeta(pi_b, sd$beta_slab_pi_a, sd$beta_slab_pi_b, log = TRUE) +
         sum(log_mix(pi_b, dnorm(betaX, 0, sd$beta_slab_sd, log = TRUE), dnorm(betaX, 0, sd$beta_spike_sd, log = TRUE)))
     } else if (pb == 4L) {
-      s2g <- gv("sigma2_beta_group", px)
-      lp_eta0 <- lp_eta0 + sum(dgamma(s2g, shape = shape_grp, rate = 0.5 * effb, log = TRUE)) +
-        sum(dnorm(betaX, 0, matrix(sqrt(s2g), m, px, byrow = TRUE), log = TRUE))
+      lp_eta0 <- lp_eta0 + dgrouplap_log(betaX, sqrt(effb))
     } else if (pb == 5L) {
-      om <- gv("omega_beta_group", px); s2 <- gm("sigma2_beta", m, px)
+      om <- gv("omega_beta_group", px)
       lp_eta0 <- lp_eta0 + sum(dinvgamma_log(om, 0.5, 0.5 * effb)) +
-        sum(dexp(s2, rate = 0.5 * matrix(om, m, px, byrow = TRUE), log = TRUE)) +
-        sum(dnorm(betaX, 0, sqrt(s2), log = TRUE))
+        sum(dlaplace_log(betaX, 1 / sqrt(matrix(om, m, px, byrow = TRUE))))
     }
   }
   # u ~ beta(1, 1) has log density 0 on (0, 1).
@@ -612,6 +608,15 @@
 #'   with coefficient-specific local shrinkage parameters. The
 #'   \code{"het_group_lasso"} option combines group-level shrinkage with
 #'   coefficient-level local scales, without pilot weights.
+#'   Since 0.6.8 every LASSO-type prior is fitted with its normal-scale latents
+#'   integrated out: \code{"lasso"} is the Laplace prior with rate
+#'   \eqn{\lambda} (Park and Casella, 2008), \code{"group_lasso"} the multivariate
+#'   Laplace \eqn{\lambda^m \exp(-\lambda \|\gamma_j\|_2)} of Kyung et al. (2010),
+#'   \code{"adaptive_lasso"} the Laplace with local rate \eqn{\lambda_{q,j}} whose
+#'   square keeps its gamma hyperprior, and \code{"het_group_lasso"} the Laplace
+#'   with block rate \eqn{\sqrt{\omega_j}} whose Levy mixer stays a parameter. The
+#'   MAP is therefore the mode of the marginal posterior; the joint mode over the
+#'   scale latents does not exist (the density is unbounded as a scale tends to 0).
 #' @param beta_spike_sd,beta_slab_sd,beta_slab_pi_a,beta_slab_pi_b Spike-and-slab
 #'   hyperparameters for \code{betaX}.
 #' @param spike_sd,slab_sd,slab_pi_a,slab_pi_b Spike-and-slab hyperparameters.
@@ -943,20 +948,13 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
 
       // Hierarchy latents exist only for the prior that uses them (size 0 otherwise),
       // so the Hessian is over the active parameters only.
-      // Group-level scale for beta group lasso (one per X column)
-      vector<lower=0>[px * (prior_beta_code == 4)] sigma2_beta_group;
-
-      // Element-wise local scales for beta lasso / hetero group / adaptive lasso
-      matrix<lower=0>[m, px * (prior_beta_code == 2 || prior_beta_code == 5 || prior_beta_code == 6)] sigma2_beta;
-
+      // 0.6.8: the normal-scale latents (sigma2_*) of the LASSO-type hierarchies are
+      // INTEGRATED OUT (their joint mode does not exist: the density is unbounded as a
+      // scale -> 0 with its coefficients); the MAP is taken on the marginal prior. Only
+      // the local rates of the adaptive LASSO and the block mixers of the heterogeneous
+      // group LASSO remain as parameters.
       // Local adaptive shrinkage rates for beta adaptive lasso
       matrix<lower=0>[m, px * (prior_beta_code == 6)] lambda2_beta_local;
-
-      // Group-level scale for group lasso (one per H column)
-      vector<lower=0>[r * (prior_code == 1)] sigma2_gamma_group;
-
-      // Element-wise local scales for lasso / hetero group / adaptive lasso
-      matrix<lower=0>[m, r * (prior_code == 2 || prior_code == 4 || prior_code == 5)] sigma2_gamma;
 
       // Local adaptive shrinkage rates for adaptive lasso
       matrix<lower=0>[m, r * (prior_code == 5)] lambda2_gamma_local;
@@ -1029,20 +1027,20 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
           } else {
             lambda_beta2_eff = lambda_beta2_fixed;
           }
+          // marginal of the Park & Casella hierarchy: Laplace with rate sqrt(lambda_beta2)
           for (j in 1:m) {
             for (i in 1:px) {
-              sigma2_beta[j, i] ~ exponential(0.5 * lambda_beta2_eff);
-              betaX[j, i] ~ normal(0, sqrt(sigma2_beta[j, i]));
+              target += double_exponential_lpdf(betaX[j, i] | 0, inv_sqrt(lambda_beta2_eff));
             }
           }
         } else if (prior_beta_code == 6) {
           // adaptive lasso on the slopes: local rates with the gamma hyperprior
-          // directly (Leng, Tran & Nott 2014, Eq. 7); no global rate in this branch
+          // directly (Leng, Tran & Nott 2014, Eq. 7); no global rate in this branch;
+          // the normal scale is integrated out -> Laplace with rate sqrt(lambda2_local)
           for (j in 1:m) {
             for (i in 1:px) {
               lambda2_beta_local[j, i] ~ gamma(lambda_beta2_a, lambda_beta2_b);
-              sigma2_beta[j, i] ~ exponential(0.5 * lambda2_beta_local[j, i]);
-              betaX[j, i] ~ normal(0, sqrt(sigma2_beta[j, i]));
+              target += double_exponential_lpdf(betaX[j, i] | 0, inv_sqrt(lambda2_beta_local[j, i]));
             }
           }
         } else if (prior_beta_code == 3) {
@@ -1064,11 +1062,12 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
           } else {
             lambda_beta2_eff = lambda_beta2_fixed;
           }
-          for (i in 1:px) {
-            sigma2_beta_group[i] ~ gamma((m + 1) / 2, 0.5 * lambda_beta2_eff);
-            for (j in 1:m) {
-              betaX[j, i] ~ normal(0, sqrt(sigma2_beta_group[i]));
-            }
+          // marginal of the Kyung et al. (2010) group hierarchy: lambda^m exp(-lambda ||betaX_i||)
+          {
+            real lam_b = sqrt(lambda_beta2_eff);
+            real c_grp_b = -0.5 * (m + 1) * log2() - 0.5 * (m - 1) * log(2 * pi()) - lgamma(0.5 * (m + 1));
+            for (i in 1:px)
+              target += m * log(lam_b) - lam_b * sqrt(dot_self(col(betaX, i)) + iq_smooth2) + c_grp_b;
           }
         } else if (prior_beta_code == 5) {
           real c_levy_beta;
@@ -1082,9 +1081,9 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
           c_levy_beta = lambda_beta2_eff;
           for (i in 1:px) {
             omega_beta_group[i] ~ inv_gamma(0.5, 0.5 * c_levy_beta);
+            // normal scale integrated out -> Laplace with rate sqrt(omega_i)
             for (j in 1:m) {
-              sigma2_beta[j, i] ~ exponential(0.5 * omega_beta_group[i]);
-              betaX[j, i] ~ normal(0, sqrt(sigma2_beta[j, i]));
+              target += double_exponential_lpdf(betaX[j, i] | 0, inv_sqrt(omega_beta_group[i]));
             }
           }
         }
@@ -1142,33 +1141,34 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
           lambda_lasso2_eff = lambda_lasso2_fixed;
         }
 
-        // 1 = group lasso
+        // 1 = group lasso: marginal of the Kyung et al. (2010) hierarchy (6),
+        //     sigma2_j ~ Gamma((m+1)/2, lambda^2/2), gamma_j | sigma2_j ~ N_m(0, sigma2_j I):
+        //     p(gamma_j) = lambda^m 2^{-(m+1)/2} (2 pi)^{-(m-1)/2} / Gamma((m+1)/2) exp(-lambda ||gamma_j||_2).
+        //     The norm is smoothed with the IQ constant (exact when iq_smooth2 = 0).
         if (prior_code == 1) {
+          real lam = sqrt(lambda_lasso2_eff);
+          real c_grp = -0.5 * (m + 1) * log2() - 0.5 * (m - 1) * log(2 * pi()) - lgamma(0.5 * (m + 1));
           for (i in 1:r) {
-            sigma2_gamma_group[i] ~ gamma( (m + 1) / 2, 0.5 * lambda_lasso2_eff );
-            for (j in 1:m) {
-              gamma[j, i] ~ normal(0, sqrt(sigma2_gamma_group[i]));
-            }
+            target += m * log(lam) - lam * sqrt(dot_self(col(gamma, i)) + iq_smooth2) + c_grp;
           }
 
-        // 2 = lasso
+        // 2 = lasso: marginal of the Park & Casella (2008) hierarchy, Laplace with rate lambda
         } else if (prior_code == 2) {
           for (j in 1:m) {
             for (i in 1:r) {
-              sigma2_gamma[j, i] ~ exponential(0.5 * lambda_lasso2_eff);
-              gamma[j, i] ~ normal(0, sqrt(sigma2_gamma[j, i]));
+              target += double_exponential_lpdf(gamma[j, i] | 0, inv_sqrt(lambda_lasso2_eff));
             }
           }
 
         // 5 = adaptive lasso with coefficient-specific local rates, each with the
         //     conjugate gamma hyperprior Gamma(a, b) of Leng, Tran & Nott (2014), Eq. (7)
         //     (their r = a, delta = b); no global rate in this branch (Appendix B).
+        //     The normal scale is integrated out: gamma_qj | lambda2_qj ~ Laplace(rate sqrt(lambda2_qj)).
         } else if (prior_code == 5) {
           for (j in 1:m) {
             for (i in 1:r) {
               lambda2_gamma_local[j, i] ~ gamma(lambda_lasso2_a, lambda_lasso2_b);
-              sigma2_gamma[j, i] ~ exponential(0.5 * lambda2_gamma_local[j, i]);
-              gamma[j, i] ~ normal(0, sqrt(sigma2_gamma[j, i]));
+              target += double_exponential_lpdf(gamma[j, i] | 0, inv_sqrt(lambda2_gamma_local[j, i]));
             }
           }
 
@@ -1187,15 +1187,14 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
 
         // 4 = heterogeneous group lasso with Levy mixing
         // Groups by time block (consistent with group lasso prior_code=1)
-        // omega_group[i]: block-level Levy scale (one per time block)
-        // sigma2_gamma[j, i]: element-specific scale (one per quantile x block)
+        // omega_group[i]: block-level Levy scale (one per time block), kept as a parameter
+        // element scales integrated out: gamma_qj | omega_i ~ Laplace(rate sqrt(omega_i))
         } else if (prior_code == 4) {
           real c_levy = lambda_lasso2_eff;
           for (i in 1:r) {
             omega_group[i] ~ inv_gamma(0.5, 0.5 * c_levy);
             for (j in 1:m) {
-              sigma2_gamma[j, i] ~ exponential(0.5 * omega_group[i]);
-              gamma[j, i] ~ normal(0, sqrt(sigma2_gamma[j, i]));
+              target += double_exponential_lpdf(gamma[j, i] | 0, inv_sqrt(omega_group[i]));
             }
           }
 
@@ -1498,11 +1497,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
   # can start in (or reach) these flat regions and yield runaway MAP modes.
   # Sizes of the hierarchy latents follow the Stan parameter block: a latent
   # exists only for the prior that uses it (size 0 otherwise); u only if jittering.
-  n_bg <- if (prior_beta_code == 4L) px else 0L
-  n_b  <- if (prior_beta_code %in% c(2L, 5L, 6L)) px else 0L
   n_bl <- if (prior_beta_code == 6L) px else 0L
-  n_gg <- if (prior_code == 1L) r else 0L
-  n_g  <- if (prior_code %in% c(2L, 4L, 5L)) r else 0L
   n_gl <- if (prior_code == 5L) r else 0L
   n_ob <- if (prior_beta_code == 5L) px else 0L
   n_og <- if (prior_code == 4L) r else 0L
@@ -1511,11 +1506,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
     beta0 = as.array(beta0_loc),
     betaX = matrix(0, m, px),
     gamma = matrix(0, m, r),
-    sigma2_beta_group = as.array(rep(1, n_bg)),
-    sigma2_beta = matrix(1, m, n_b),
     lambda2_beta_local = matrix(1, m, n_bl),
-    sigma2_gamma_group = as.array(rep(1, n_gg)),
-    sigma2_gamma = matrix(1, m, n_g),
     lambda2_gamma_local = matrix(1, m, n_gl),
     lambda_beta2 = 1, lambda_lasso2 = 1,
     pi_slab_beta = 0.5, pi_slab = 0.5,
@@ -1727,19 +1718,8 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
         # lower-bounded scale params are log-transformed below for correct inversion.
         theta_unc_full <- as.numeric(par_map[1:k])
 
-        # sigma2_beta_group (<lower=0>): log
-        tbg_idx <- grep("^sigma2_beta_group", raw_par_names)
-        if (length(tbg_idx) > 0) theta_unc_full[tbg_idx] <- log(pmax(par_map[tbg_idx], 1e-10))
-        # sigma2_gamma_group (<lower=0>): log
-        tgg_idx <- grep("^sigma2_gamma_group", raw_par_names)
-        if (length(tgg_idx) > 0) theta_unc_full[tgg_idx] <- log(pmax(par_map[tgg_idx], 1e-10))
-        # sigma2_beta (<lower=0>): log
-        tb_idx <- grep("^sigma2_beta\\[", raw_par_names)
-        if (length(tb_idx) > 0) theta_unc_full[tb_idx] <- log(pmax(par_map[tb_idx], 1e-10))
-        # sigma2_gamma (<lower=0>): log
-        tg_idx <- grep("^sigma2_gamma\\[", raw_par_names)
-        if (length(tg_idx) > 0) theta_unc_full[tg_idx] <- log(pmax(par_map[tg_idx], 1e-10))
-        # lambda_lasso2, lambda_beta2, omega_* (<lower=0>): log
+        # lambda_lasso2, lambda_beta2, local rates, omega_* (<lower=0>): log
+        # (0.6.8: no sigma2_* latents remain; the LASSO-type priors are marginal)
         for (pat in c("^lambda_lasso2$", "^lambda_beta2$", "^lambda2_beta_local\\[", "^lambda2_gamma_local\\[", "^omega_group", "^omega_beta_group")) {
           idx_tmp <- grep(pat, raw_par_names)
           if (length(idx_tmp) > 0) theta_unc_full[idx_tmp] <- log(pmax(par_map[idx_tmp], 1e-10))

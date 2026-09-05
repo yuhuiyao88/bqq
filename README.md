@@ -199,6 +199,22 @@ the full across-block family — raw, Holm, Bonferroni, BH, and the **calibrated
 single-step rule using analytic charting constants (Šidák-type) that control the
 probability of any false alarm across all blocks and cells jointly.
 
+### 0.6.8
+
+- **LASSO-type priors are fitted with their scale latents integrated out.** The joint
+  MAP of the normal scale-mixture hierarchies (`lasso`, `group_lasso`, `het_group_lasso`,
+  `adaptive_lasso`, and the same priors on `betaX`) does not exist: the joint density is
+  unbounded as a scale latent tends to 0 together with its coefficients, and the optimizer
+  occasionally reached that spike (a het_group_lasso fit on a 90-point series failed with
+  "Initialization failed" on every retry). The Stan program now uses the marginal priors:
+  `lasso` is Laplace with rate `sqrt(lambda_lasso2)` (Park and Casella, 2008); `group_lasso`
+  is `lambda^m exp(-lambda ||gamma_j||_2)` with its normalizing constant (Kyung et al., 2010,
+  hierarchy (6)); `adaptive_lasso` is Laplace with local rate `sqrt(lambda2_qj)` and keeps
+  `lambda2_qj ~ Gamma(a, b)`; `het_group_lasso` is Laplace with block rate `sqrt(omega_j)` and
+  keeps `omega_j ~ InvGamma(1/2, c/2)`. `.bqq_lp17()` matches term by term. The group norm is
+  smoothed in the optimizer with the IQ constant (`sqrt(||g||^2 + iq_smooth^2)`). Results
+  change for these four priors relative to 0.6.7; spike-and-slab priors are unaffected.
+
 ### 0.6.7
 
 - **Cross-validation has one function.** `cv_copss_map()` and `cv_copss_mcmc()` were
