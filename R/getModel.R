@@ -155,11 +155,11 @@
 # `par` is the named vector returned by rstan::optimizing(as_vector = TRUE).
 # Named parameter vector in Stan's as_vector naming (name, name[i], name[i,j]) from
 # either the vector rstan::optimizing(as_vector = TRUE) returns or the list of
-# as_vector = FALSE. The four true scalars of the Stan program are named bare.
+# as_vector = FALSE. Since 0.6.9 the only bare scalar of the Stan program is smooth_T.
 .bqq_par_as_vector <- function(pl) {
   if (is.numeric(pl) && !is.null(names(pl))) return(pl)
   if (!is.list(pl)) return(NULL)
-  scalars <- c("lambda_beta2", "lambda_lasso2", "pi_slab_beta", "pi_slab", "smooth_T")
+  scalars <- c("smooth_T")
   out <- numeric(0)
   for (nm in names(pl)) {
     v <- pl[[nm]]
@@ -267,7 +267,7 @@
     pc <- as.integer(sd$prior_code)
     eff <- as.numeric(sd$lambda_lasso2_fixed)
     if (!(pc %in% c(3L, 5L, 6L)) && as.integer(sd$adaptive_gamma) == 1L) {
-      ll2 <- gs("lambda_lasso2")
+      ll2 <- gv("lambda_lasso2", 1L)
       lp_gamma <- lp_gamma + dgamma(ll2, shape = sd$lambda_lasso2_a, rate = sd$lambda_lasso2_b, log = TRUE)
       eff <- ll2
     }
@@ -280,7 +280,7 @@
       lp_gamma <- lp_gamma + sum(dgamma(l2l, shape = sd$lambda_lasso2_a, rate = sd$lambda_lasso2_b, log = TRUE)) +
         sum(dlaplace_log(gamma, 1 / sqrt(l2l)))
     } else if (pc == 3L) {
-      pi_s <- gs("pi_slab")
+      pi_s <- gv("pi_slab", 1L)
       lp_gamma <- lp_gamma + dbeta(pi_s, sd$slab_pi_a, sd$slab_pi_b, log = TRUE) +
         sum(log_mix(pi_s, dnorm(gamma, 0, sd$slab_sd, log = TRUE), dnorm(gamma, 0, sd$spike_sd, log = TRUE)))
     } else if (pc == 4L) {
@@ -288,7 +288,7 @@
       lp_gamma <- lp_gamma + sum(dinvgamma_log(om, 0.5, 0.5 * eff)) +
         sum(dlaplace_log(gamma, 1 / sqrt(matrix(om, m, r, byrow = TRUE))))
     } else if (pc == 6L) {
-      pi_s <- gs("pi_slab")
+      pi_s <- gv("pi_slab", 1L)
       lp_gamma <- lp_gamma + dbeta(pi_s, sd$slab_pi_a, sd$slab_pi_b, log = TRUE) +
         sum(log_mix(pi_s, dlaplace_log(gamma, sd$slab_sd / sqrt(2)), dlaplace_log(gamma, sd$spike_sd / sqrt(2))))   # variance = sd^2, Appendix B
     }
@@ -300,7 +300,7 @@
     pb <- as.integer(sd$prior_beta_code)
     effb <- as.numeric(sd$lambda_beta2_fixed)
     if (pb %in% c(2L, 4L, 5L) && as.integer(sd$adaptive_beta) == 1L) {
-      lb2 <- gs("lambda_beta2")
+      lb2 <- gv("lambda_beta2", 1L)
       lp_eta0 <- lp_eta0 + dgamma(lb2, shape = sd$lambda_beta2_a, rate = sd$lambda_beta2_b, log = TRUE)
       effb <- lb2
     }
@@ -313,7 +313,7 @@
       lp_eta0 <- lp_eta0 + sum(dgamma(l2l, shape = sd$lambda_beta2_a, rate = sd$lambda_beta2_b, log = TRUE)) +
         sum(dlaplace_log(betaX, 1 / sqrt(l2l)))
     } else if (pb == 3L) {
-      pi_b <- gs("pi_slab_beta")
+      pi_b <- gv("pi_slab_beta", 1L)
       lp_eta0 <- lp_eta0 + dbeta(pi_b, sd$beta_slab_pi_a, sd$beta_slab_pi_b, log = TRUE) +
         sum(log_mix(pi_b, dnorm(betaX, 0, sd$beta_slab_sd, log = TRUE), dnorm(betaX, 0, sd$beta_spike_sd, log = TRUE)))
     } else if (pb == 4L) {
@@ -959,15 +959,18 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
       // Local adaptive shrinkage rates for adaptive lasso
       matrix<lower=0>[m, r * (prior_code == 5)] lambda2_gamma_local;
 
-      // Global beta shrinkage rate (learned when adaptive_beta = 1)
-      real<lower=0> lambda_beta2;
+      // 0.6.9: the global rates and the mixing weights exist only for the priors that use
+      // them (length 1) and are absent otherwise (length 0), so no unidentified parameter
+      // is left in the Hessian. Stan names them lambda_lasso2[1], pi_slab[1], ...
+      // Global beta shrinkage rate (learned when adaptive_beta = 1; betaX LASSO-type priors)
+      vector<lower=0>[(px > 0 && adaptive_beta == 1 && (prior_beta_code == 2 || prior_beta_code == 4 || prior_beta_code == 5)) ? 1 : 0] lambda_beta2;
 
-      // Global LASSO rate (learned when adaptive_gamma = 1)
-      real<lower=0> lambda_lasso2;
+      // Global LASSO rate (learned when adaptive_gamma = 1; gamma LASSO-type priors)
+      vector<lower=0>[(r > 0 && adaptive_gamma == 1 && (prior_code == 1 || prior_code == 2 || prior_code == 4)) ? 1 : 0] lambda_lasso2;
 
       // Spike-and-slab mixing weights
-      real<lower=0, upper=1> pi_slab_beta;
-      real<lower=0, upper=1> pi_slab;
+      vector<lower=0, upper=1>[(px > 0 && prior_beta_code == 3) ? 1 : 0] pi_slab_beta;
+      vector<lower=0, upper=1>[(prior_code == 3 || prior_code == 6) ? 1 : 0] pi_slab;
 
       // Group-level mixer for beta hetero group lasso
       vector<lower=0>[px * (prior_beta_code == 5)] omega_beta_group;
@@ -1022,8 +1025,8 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
         } else if (prior_beta_code == 2) {
           real lambda_beta2_eff;
           if (adaptive_beta == 1) {
-            lambda_beta2 ~ gamma(lambda_beta2_a, lambda_beta2_b);
-            lambda_beta2_eff = lambda_beta2;
+            lambda_beta2[1] ~ gamma(lambda_beta2_a, lambda_beta2_b);
+            lambda_beta2_eff = lambda_beta2[1];
           } else {
             lambda_beta2_eff = lambda_beta2_fixed;
           }
@@ -1044,11 +1047,11 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
             }
           }
         } else if (prior_beta_code == 3) {
-          pi_slab_beta ~ beta(beta_slab_pi_a, beta_slab_pi_b);
+          pi_slab_beta[1] ~ beta(beta_slab_pi_a, beta_slab_pi_b);
           for (j in 1:m) {
             for (i in 1:px) {
               target += log_mix(
-                pi_slab_beta,
+                pi_slab_beta[1],
                 normal_lpdf(betaX[j, i] | 0, beta_slab_sd),
                 normal_lpdf(betaX[j, i] | 0, beta_spike_sd)
               );
@@ -1057,8 +1060,8 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
         } else if (prior_beta_code == 4) {
           real lambda_beta2_eff;
           if (adaptive_beta == 1) {
-            lambda_beta2 ~ gamma(lambda_beta2_a, lambda_beta2_b);
-            lambda_beta2_eff = lambda_beta2;
+            lambda_beta2[1] ~ gamma(lambda_beta2_a, lambda_beta2_b);
+            lambda_beta2_eff = lambda_beta2[1];
           } else {
             lambda_beta2_eff = lambda_beta2_fixed;
           }
@@ -1073,8 +1076,8 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
           real c_levy_beta;
           real lambda_beta2_eff;
           if (adaptive_beta == 1) {
-            lambda_beta2 ~ gamma(lambda_beta2_a, lambda_beta2_b);
-            lambda_beta2_eff = lambda_beta2;
+            lambda_beta2[1] ~ gamma(lambda_beta2_a, lambda_beta2_b);
+            lambda_beta2_eff = lambda_beta2[1];
           } else {
             lambda_beta2_eff = lambda_beta2_fixed;
           }
@@ -1132,8 +1135,8 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
         real lambda_lasso2_eff;
         if (prior_code != 3 && prior_code != 5 && prior_code != 6) {
           if (adaptive_gamma == 1) {
-            lambda_lasso2 ~ gamma(lambda_lasso2_a, lambda_lasso2_b);
-            lambda_lasso2_eff = lambda_lasso2;
+            lambda_lasso2[1] ~ gamma(lambda_lasso2_a, lambda_lasso2_b);
+            lambda_lasso2_eff = lambda_lasso2[1];
           } else {
             lambda_lasso2_eff = lambda_lasso2_fixed;
           }
@@ -1174,11 +1177,11 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
 
         // 3 = spike-and-slab
         } else if (prior_code == 3) {
-          pi_slab ~ beta(slab_pi_a, slab_pi_b);
+          pi_slab[1] ~ beta(slab_pi_a, slab_pi_b);
           for (j in 1:m) {
             for (i in 1:r) {
               target += log_mix(
-                pi_slab,
+                pi_slab[1],
                 normal_lpdf(gamma[j, i] | 0, slab_sd),
                 normal_lpdf(gamma[j, i] | 0, spike_sd)
               );
@@ -1203,14 +1206,14 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
         // approximation posterior variance is driven by the likelihood (honest) rather
         // than a tiny prior variance -- avoids the near-Dirac Gaussian-spike degeneracy.
         } else if (prior_code == 6) {
-          pi_slab ~ beta(slab_pi_a, slab_pi_b);
+          pi_slab[1] ~ beta(slab_pi_a, slab_pi_b);
           for (j in 1:m) {
             for (i in 1:r) {
               // Appendix B writes the components as Laplace(0, sigma^2) with sigma^2 a
               // VARIANCE; Stan's double_exponential takes the scale b, Var = 2 b^2,
               // so b = sigma / sqrt(2) (author's alignment ruling, 2026-09-04).
               target += log_mix(
-                pi_slab,
+                pi_slab[1],
                 double_exponential_lpdf(gamma[j, i] | 0, slab_sd / sqrt2()),
                 double_exponential_lpdf(gamma[j, i] | 0, spike_sd / sqrt2())
               );
@@ -1499,6 +1502,10 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
   # exists only for the prior that uses it (size 0 otherwise); u only if jittering.
   n_bl <- if (prior_beta_code == 6L) px else 0L
   n_gl <- if (prior_code == 5L) r else 0L
+  n_lb2 <- if (px > 0L && as.integer(adaptive_beta) == 1L && prior_beta_code %in% c(2L, 4L, 5L)) 1L else 0L
+  n_ll2 <- if (r > 0L && as.integer(adaptive_gamma) == 1L && prior_code %in% c(1L, 2L, 4L)) 1L else 0L
+  n_pib <- if (px > 0L && prior_beta_code == 3L) 1L else 0L
+  n_pi  <- if (prior_code %in% c(3L, 6L)) 1L else 0L
   n_ob <- if (prior_beta_code == 5L) px else 0L
   n_og <- if (prior_code == 4L) r else 0L
   n_u  <- if (as.integer(jittering) == 1L) n else 0L
@@ -1508,8 +1515,8 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
     gamma = matrix(0, m, r),
     lambda2_beta_local = matrix(1, m, n_bl),
     lambda2_gamma_local = matrix(1, m, n_gl),
-    lambda_beta2 = 1, lambda_lasso2 = 1,
-    pi_slab_beta = 0.5, pi_slab = 0.5,
+    lambda_beta2 = as.array(rep(1, n_lb2)), lambda_lasso2 = as.array(rep(1, n_ll2)),
+    pi_slab_beta = as.array(rep(0.5, n_pib)), pi_slab = as.array(rep(0.5, n_pi)),
     omega_beta_group = as.array(rep(1, n_ob)),
     omega_group = as.array(rep(1, n_og)),
     u = as.array(rep(0.5, n_u))
@@ -1720,18 +1727,18 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
 
         # lambda_lasso2, lambda_beta2, local rates, omega_* (<lower=0>): log
         # (0.6.8: no sigma2_* latents remain; the LASSO-type priors are marginal)
-        for (pat in c("^lambda_lasso2$", "^lambda_beta2$", "^lambda2_beta_local\\[", "^lambda2_gamma_local\\[", "^omega_group", "^omega_beta_group")) {
+        for (pat in c("^lambda_lasso2\\[", "^lambda_beta2\\[", "^lambda2_beta_local\\[", "^lambda2_gamma_local\\[", "^omega_group", "^omega_beta_group")) {
           idx_tmp <- grep(pat, raw_par_names)
           if (length(idx_tmp) > 0) theta_unc_full[idx_tmp] <- log(pmax(par_map[idx_tmp], 1e-10))
         }
         # pi_slab_beta (<lower=0, upper=1>): logit
-        pi_beta_idx <- grep("^pi_slab_beta$", raw_par_names)
+        pi_beta_idx <- grep("^pi_slab_beta\\[", raw_par_names)
         if (length(pi_beta_idx) > 0) {
           pv <- pmin(pmax(par_map[pi_beta_idx], 1e-10), 1 - 1e-10)
           theta_unc_full[pi_beta_idx] <- log(pv / (1 - pv))
         }
         # pi_slab (<lower=0, upper=1>): logit
-        pi_idx <- grep("^pi_slab$", raw_par_names)
+        pi_idx <- grep("^pi_slab\\[", raw_par_names)
         if (length(pi_idx) > 0) {
           pv <- pmin(pmax(par_map[pi_idx], 1e-10), 1 - 1e-10)
           theta_unc_full[pi_idx] <- log(pv / (1 - pv))
@@ -2005,9 +2012,9 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
       warm <- NULL
       # One chain (author's ruling 2026-09-04): the pilot initialization of Sec. 2.4
       # starts the iterations once; every step after the first starts the optimizer at
-      # the previous step's full MAP (coefficients AND every hierarchy latent, including
-      # the true scalars lambda_beta2, lambda_lasso2, pi_slab_beta, pi_slab, which Stan
-      # names without brackets). Applies to "map" (named vector, as_vector = TRUE) and to
+      # the previous step's full MAP (coefficients AND every hierarchy latent; since 0.6.9
+      # the global rates and mixing weights are length-0/1 vectors named with brackets).
+      # Applies to "map" (named vector, as_vector = TRUE) and to
       # the MAP stage of "map_mcmc" (list, as_vector = FALSE). Zero-length blocks
       # (px = 0 or r = 0) are skipped.
       if (s > 1L && fit_method %in% c("map", "map_mcmc") && !is.null(res)) {

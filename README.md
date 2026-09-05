@@ -199,6 +199,16 @@ the full across-block family — raw, Holm, Bonferroni, BH, and the **calibrated
 single-step rule using analytic charting constants (Šidák-type) that control the
 probability of any false alarm across all blocks and cells jointly.
 
+### 0.6.9
+
+- **No unidentified parameters.** The global rates `lambda_lasso2` / `lambda_beta2` and the
+  mixing weights `pi_slab` / `pi_slab_beta` used to be declared for every prior; under a prior
+  that does not use them they had no prior and no effect, leaving a flat direction in the
+  Hessian (handled by a pseudo-inverse). They are now length-0/1 vectors sized by the prior
+  codes, like the hierarchy latents, and are named `lambda_lasso2[1]`, `pi_slab[1]`, ... in the
+  MAP output. `.bqq_lp17()` and the warm start follow. Fits are unchanged for the priors that
+  use them.
+
 ### 0.6.8
 
 - **LASSO-type priors are fitted with their scale latents integrated out.** The joint
