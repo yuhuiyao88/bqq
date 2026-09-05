@@ -24,8 +24,7 @@ getModel(
   iq_em_max_iter = 60,
   iq_em_tol = 0.01,
   iq_em_mc_tol = 0.02,
-  iq_em_step = c("hybrid", "recursion", "fixedpoint"),
-  iq_em_warm = FALSE,
+  iq_em_step = c("fixedpoint", "hybrid", "recursion"),
   iq_em_switch_tol = 0.5,
   adaptive_beta = TRUE,
   lambda_beta2_a = 1,
@@ -67,7 +66,12 @@ getModel(
   spike_sd = 0.1,
   slab_sd = 2,
   slab_pi_a = 1,
-  slab_pi_b = 1
+  slab_pi_b = 1,
+  iq_smooth = 1e-04,
+  iq_em_lp_tol = 0.01,
+  iq_em_warm_jitter = c(0.01, 0.02, 0.05),
+  iq_em_estep = c("closed", "draws"),
+  iq_em_inner_iter = NULL
 )
 }
 \arguments{
@@ -189,15 +193,10 @@ of the way per iteration and does not cycle, but needs many iterations.
 \code{"hybrid"} (default since 0.6.3) starts with \code{"fixedpoint"} and switches
 to \code{"recursion"} for the remaining iterations the first time the update
 reverses direction by a relative change of at least \code{iq_em_switch_tol};
-\code{iq_em$switched_at} records the iteration.}
-
-\item{iq_em_warm}{Logical (default FALSE). Start the MAP optimization of each EM
-iteration after the first at the previous iteration's solution instead of the
-\code{map_init} start. Off by default because the fused penalty places the
-MAP on kinks of the objective: restarted there, L-BFGS fails its first line
-search and returns the start unchanged, so the coefficients stop updating
-and only lambda_iq moves. Before 0.6.5 the option had no effect for
-\code{fit_method = "map"}; every EM iteration started from \code{map_init}.}
+\code{iq_em$switched_at} records the iteration.
+Default \code{"fixedpoint"} (Appendix C, Eq. C.9): with the warm chain and the
+Eq. (17) stopping rule no reversal was observed on ARCOS l = 182 or l = 365
+(2026-09-04), so the hybrid switch is no longer needed; it is kept as an option.}
 
 \item{iq_em_switch_tol}{Relative change that counts as an oscillation for the
 \code{"hybrid"} switch (default 0.5). Reversals smaller than this are left to
@@ -217,11 +216,14 @@ level \eqn{\lambda_\beta^2} when \code{adaptive_beta = FALSE} (default 1).}
 \eqn{\lambda^2} is learned from data via a Gamma prior. If FALSE, the fixed
 value \code{lambda_lasso2_fixed} is used.}
 
-\item{lambda_lasso2_a, lambda_lasso2_b}{Positive shape/rate hyperparameters for the
-LASSO-type shrinkage hierarchy. Their exact role depends on \code{prior_gamma}:
-they govern the global \eqn{\lambda^2} prior for \code{"lasso"}, \code{"group_lasso"},
-and \code{"het_group_lasso"}, and the global hyperprior driving the local
-coefficient-specific shrinkage in \code{"adaptive_lasso"}.}
+\item{lambda_lasso2_a, lambda_lasso2_b}{Positive shape/rate hyperparameters of the
+conjugate gamma hyperprior on the rates of the LASSO-type priors (Appendix B).
+For \code{"lasso"}, \code{"group_lasso"} and \code{"het_group_lasso"} they are
+the prior of the global rate \eqn{\lambda^2 \sim Gamma(a_\lambda, b_\lambda)}
+(Park and Casella, 2008, Sec. 3.2). For \code{"adaptive_lasso"} they are the prior
+of every local rate directly, \eqn{\lambda^2_{q,j} \sim Gamma(a_\lambda, b_\lambda)}
+(Leng, Tran and Nott, 2014, Eq. 7); the adaptive LASSO has no global rate, so
+\code{adaptive_gamma} and \code{lambda_lasso2_fixed} do not affect it.}
 
 \item{lambda_lasso2_fixed}{Positive scalar; fixed value for the global shrinkage
 level \eqn{\lambda^2} when \code{adaptive_gamma = FALSE} (default 1).}
@@ -327,7 +329,10 @@ hyperparameters for \code{betaX}.}
 \item{spike_sd, slab_sd, slab_pi_a, slab_pi_b}{Spike-and-slab hyperparameters.
   NOTE: \code{spike_sd}/\code{slab_sd} are STANDARD DEVIATIONS; the
   manuscript's spike-and-slab specification is written in variances
-  (variance = sd^2).
+  (variance = sd^2). For \code{prior_gamma = "spike_slab_lasso"} the Laplace
+  components are parametrized so that their variances are likewise
+  \code{spike_sd^2} and \code{slab_sd^2} (Laplace scale = sd / sqrt(2)), as in
+  Appendix B.
 
   \code{spike_sd} defaults to \strong{0.1} (raised from 0.05 in 0.5.2). A
   narrower spike makes the null mixture component close to a point mass, so
@@ -346,6 +351,51 @@ hyperparameters for \code{betaX}.}
   above concerns \code{spike_sd} only: it governs the block coefficients that
   drive detection, whereas \code{beta_spike_sd} governs \code{betaX}, and no
   equivalent false-alarm study was run for the covariate side.}
+
+\item{iq_smooth}{Smoothing constant of the absolute value in the interquantile
+penalty inside the optimizer: |d| is replaced by sqrt(d^2 + iq_smooth^2) so that
+the objective is differentiable at fused solutions and warm restarts move
+(default 1e-4; 0 restores the exact absolute value). The EM monitor \code{lp17}
+always uses the exact absolute value of Eq. (15).}
+
+\item{iq_em_lp_tol}{Stopping rule of the EM chain: the chain stops as soon as the
+relative gain in the complete-data log posterior -- manuscript Eq. (17) plus the
+normalizing term \eqn{r(m-1) \log \lambda_{iq}} of the fused prior (Appendix C,
+Eq. C.1), recomputed exactly at the step's solution (trace columns \code{lp_cd},
+\code{lp_cd_gain}; Eq. 17 alone in \code{lp17}) -- is below this fraction of the
+previous value's magnitude (floored at 1). Default 1e-2, the classic loose EM
+criterion and the same 1\% used for \code{iq_em_tol}. The term is constant within a
+fit, so the inner optimization is unchanged, and it is a constant when
+\code{adaptive_iq = FALSE}. \code{iq_em_tol} remains a secondary stop.}
+
+\item{iq_em_warm_jitter}{The estimation is one chain: the optimizer starts at the
+pilot initialization of Section 2.4 once, and every EM iteration after the first
+starts the MAP optimization at the previous iteration's full solution
+(coefficients and hierarchy latents). If the optimizer returns that start
+unchanged (a failed first line search on a kink of the fused penalty), it is
+restarted from the same solution with a small jitter on the unbounded
+coefficients; \code{iq_em_warm_jitter} gives the jitter standard deviations
+tried in order. The trace column \code{warm_status} records "start" (first
+iteration), "moved", "jitter<k>" or "stalled". The chain applies to
+\code{fit_method = "map"} and to the MAP stage of \code{"map_mcmc"}.}
+
+\item{iq_em_estep}{How the E-step expectation E|d| of Appendix C, Eq. (C.6), is
+evaluated. \code{"closed"} (default): the folded-normal mean of each adjacent
+difference under the Laplace approximation, E|d| = s sqrt(2/pi) exp(-dhat^2/(2 s^2))
++ |dhat| (1 - 2 Phi(-|dhat|/s)), with dhat the difference of the modes and s its
+Laplace standard deviation -- exact under the approximation and free of Monte
+Carlo noise (|d|/s is a noncentral chi with one degree of freedom).
+\code{"draws"}: the average of |d| over the \code{laplace_n_samples} draws.
+Fits without a Laplace covariance (\code{"mcmc"}, \code{"map_mcmc"}, Hessian
+failure) always use the draws. The trace records both values.}
+
+\item{iq_em_inner_iter}{\code{NULL} (default): within every EM iteration the optimizer
+runs to its own stopping rule. An integer caps the L-BFGS iterations of EVERY
+EM step's optimizer call at that value; \code{1} gives the pattern one optimizer
+iteration, one EM update, repeat (each call continues from the previous solution
+but rstan restarts the L-BFGS memory). Tested in the ar_ext5 smoke test
+(2026-09-04); the E-step then evaluates the Laplace approximation at a point that
+is not the mode, so the trace should be read with that in mind.}
 }
 \value{
 A list with components:
@@ -362,9 +412,11 @@ A list with components:
       \code{update}, \code{n_diff} (the number of penalized differences \eqn{N}),
       \code{lambda_iq2} (final, matching the returned fit), \code{lambda_iq2_next}
       (the update the last iteration proposed), \code{Sbar}, \code{converged},
-      \code{n_iter}, \code{note}, and \code{trace} -- a data frame with one row per
+      \code{n_iter}, \code{lp_tol} (the \code{iq_em_lp_tol} used), \code{note}, and
+      \code{trace} -- a data frame with one row per
       EM iteration recording \code{lambda_iq2}, \code{lambda_iq}, \code{Sbar},
-      \code{lambda_iq2_next} and \code{rel_change}.
+      \code{lambda_iq2_next}, \code{rel_change}, \code{warm_status}, \code{lp17}
+      (Eq. 17 recomputed at the step's solution) and \code{lp17_gain}.
   }
 }
 \description{

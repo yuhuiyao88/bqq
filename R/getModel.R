@@ -75,6 +75,43 @@
   total / n_comp
 }
 
+# Closed-form E-step (author, 2026-09-04): under the Laplace approximation each adjacent
+# difference is d ~ N(dhat, s^2), so |d| = s * (noncentral chi_1 with noncentrality
+# |dhat|/s) and E|d| is the folded-normal mean
+#   E|d| = s sqrt(2/pi) exp(-dhat^2 / (2 s^2)) + |dhat| (1 - 2 Phi(-|dhat|/s)),
+# with dhat the difference of the modes and s^2 = S_qq + S_{q-1,q-1} - 2 S_{q,q-1} from
+# the Laplace covariance of the coefficient block. Exact under the same approximation
+# the draws come from, and free of Monte Carlo noise. Same normalization as
+# .bqq_iq_Sbar(). Returns NA when the fit carries no Laplace covariance (mcmc paths).
+.bqq_folded_mean <- function(dhat, s) {
+  s <- pmax(s, 1e-12); a <- abs(dhat)
+  s * sqrt(2 / pi) * exp(-a^2 / (2 * s^2)) + a * (1 - 2 * stats::pnorm(-a / s))
+}
+.bqq_iq_Sbar_closed <- function(ls, w_iq_gamma, w_iq_beta, r, p_slope, m) {
+  if (is.null(ls) || is.null(ls$eta_cov) || is.null(ls$eta_names) || m < 2L) return(NA_real_)
+  nm <- ls$eta_names; mu <- ls$eta_mean; S <- ls$eta_cov
+  pair_E <- function(n1, n2) {
+    i1 <- match(n1, nm); i2 <- match(n2, nm)
+    if (is.na(i1) || is.na(i2)) return(NA_real_)
+    .bqq_folded_mean(mu[i1] - mu[i2], sqrt(max(S[i1, i1] + S[i2, i2] - 2 * S[i1, i2], 0)))
+  }
+  total <- 0; n_comp <- 0L
+  if (r > 0) {
+    Ed <- matrix(NA_real_, m - 1L, r)
+    for (j in seq_len(r)) for (q in 2:m) Ed[q - 1L, j] <- pair_E(sprintf("gamma[%d,%d]", q, j), sprintf("gamma[%d,%d]", q - 1L, j))
+    if (anyNA(Ed)) return(NA_real_)
+    total <- total + sum(w_iq_gamma * Ed) / (r * (m - 1L)); n_comp <- n_comp + 1L
+  }
+  if (p_slope > 0) {
+    Ed <- matrix(NA_real_, m - 1L, p_slope)
+    for (j in seq_len(p_slope)) for (q in 2:m) Ed[q - 1L, j] <- pair_E(sprintf("betaX[%d,%d]", q, j), sprintf("betaX[%d,%d]", q - 1L, j))
+    if (anyNA(Ed)) return(NA_real_)
+    total <- total + sum(w_iq_beta * Ed) / (p_slope * (m - 1L)); n_comp <- n_comp + 1L
+  }
+  if (n_comp == 0L) return(NA_real_)
+  total / n_comp
+}
+
 # One update of lambda_iq2 (manuscript Appendix C).
 #   "recursion"  : the M-step recursion, Eq. (C.8),
 #                    lambda2_{s+1} = 2 N lambda2_s / (lambda_s Sbar + N).
@@ -108,6 +145,211 @@
 
 # Posterior draws of beta/gamma from whichever machinery the fit_method used.
 # Laplace draws (fit_method = "map") and MCMC draws share the [S, m, .] layout.
+# ====================================================================
+# Exact penalized log posterior of manuscript Eq. (17), recomputed in R
+# ====================================================================
+# Author's ruling (2026-09-04): along the EM chain, monitor exactly Eq. (17),
+#   log pi(theta | Y, H) = l*(theta | Y, H) - P_NC(eta0, gamma) - P_IQ(gamma)
+#                          + log pi(gamma) + log pi(eta0),
+# recomputed here from the returned MAP coefficients and the Stan data. Stan's
+# returned value is NOT used: the `~` statements drop normalizing constants
+# and the experimental build smooths |d| in the IQ penalty, whereas (17) uses
+# Eq. (15) with the exact absolute value.
+#   l*      score likelihood, -0.5 ||B||^2 / n, as in the model block
+#   P_NC    lambda_nc x mean positive crossing of adjacent quantile curves
+#   P_IQ    sqrt(lambda_iq2) x normalized weighted sum of EXACT |d| (Eq. 15)
+#   pi(gamma) prior of gamma, written through its hierarchy latents and their
+#           hyperpriors exactly as the model block does (the mode is over them)
+#   pi(eta0) prior of beta0 and betaX (with their latents)
+# The data Jacobian of the log transform is added when log_flag = 1 (it is
+# constant in theta unless jittering). All log densities carry their constants.
+# `par` is the named vector returned by rstan::optimizing(as_vector = TRUE).
+# Named parameter vector in Stan's as_vector naming (name, name[i], name[i,j]) from
+# either the vector rstan::optimizing(as_vector = TRUE) returns or the list of
+# as_vector = FALSE. The four true scalars of the Stan program are named bare.
+.bqq_par_as_vector <- function(pl) {
+  if (is.numeric(pl) && !is.null(names(pl))) return(pl)
+  if (!is.list(pl)) return(NULL)
+  scalars <- c("lambda_beta2", "lambda_lasso2", "pi_slab_beta", "pi_slab", "smooth_T")
+  out <- numeric(0)
+  for (nm in names(pl)) {
+    v <- pl[[nm]]
+    if (!is.numeric(v) || length(v) == 0L) next
+    if (!is.null(dim(v)) && length(dim(v)) == 2L) {
+      nms <- outer(seq_len(nrow(v)), seq_len(ncol(v)), function(i, j) sprintf("%s[%d,%d]", nm, i, j))
+      out <- c(out, stats::setNames(as.vector(v), as.vector(nms)))
+    } else if (nm %in% scalars && length(v) == 1L) {
+      out <- c(out, stats::setNames(as.numeric(v), nm))
+    } else {
+      out <- c(out, stats::setNames(as.numeric(v), sprintf("%s[%d]", nm, seq_along(v))))
+    }
+  }
+  out
+}
+
+.bqq_lp17 <- function(par, sd) {
+  par <- .bqq_par_as_vector(par)
+  if (!is.numeric(par) || is.null(names(par))) return(NULL)
+  gv <- function(prefix, k) {
+    if (k == 0L) return(numeric(0))
+    unname(par[match(sprintf("%s[%d]", prefix, seq_len(k)), names(par))])
+  }
+  gm <- function(prefix, nr, nc) {
+    if (nr == 0L || nc == 0L) return(matrix(0, nr, nc))
+    out <- matrix(NA_real_, nr, nc)
+    for (j in seq_len(nc))
+      out[, j] <- unname(par[match(sprintf("%s[%d,%d]", prefix, seq_len(nr), j), names(par))])
+    out
+  }
+  gs <- function(nm) unname(par[[nm]])
+  n <- as.integer(sd$n); m <- as.integer(sd$m); r <- as.integer(sd$r); px <- as.integer(sd$px)
+  p_slope <- as.integer(sd$p_slope)
+  tau <- as.numeric(sd$tau_q)
+
+  beta0 <- gv("beta0", m)
+  betaX <- gm("betaX", m, px)
+  gamma <- gm("gamma", m, r)
+  beta  <- cbind(beta0, betaX)                       # m x (px + 1)
+  X_design <- cbind(rep(1, n), if (px > 0) sd$X else NULL)
+  H <- if (r > 0) sd$H else NULL
+
+  # ---- y_eff (jitter, log) ----
+  y <- as.numeric(sd$y)
+  jit <- isTRUE(as.numeric(sd$jittering) == 1)
+  logf <- isTRUE(as.numeric(sd$log_flag) == 1)
+  u <- if (jit) gv("u", n) else NULL
+  y_eff <- y
+  if (jit) y_eff <- y_eff + u
+  if (logf) y_eff <- log(y_eff)
+
+  # ---- eta (n x m) ----
+  ETA <- X_design %*% t(beta) + as.numeric(sd$offset)
+  if (r > 0) ETA <- ETA + H %*% t(gamma)
+
+  # ---- l*: score likelihood ----
+  Z <- cbind(X_design, H)
+  pr <- ncol(Z)
+  R_i <- y_eff - ETA                                 # n x m residuals
+  z <- pmin(pmax(-R_i / as.numeric(sd$base_scale), -20), 20)   # matrix first: pmin/pmax keep dims of arg 1
+  PSI <- sweep(-plogis(z), 2, tau, "+")              # tau_q - inv_logit(z)
+  S <- crossprod(Z, PSI)                             # pr x m
+  Gs <- crossprod(Z) / n + diag(1e-8, pr)
+  L_Gs <- t(chol(Gs))
+  Qk <- outer(tau, tau, pmin) - outer(tau, tau)
+  L_Q <- t(chol(Qk))
+  A <- forwardsolve(L_Gs, S)                         # pr x m
+  B <- forwardsolve(L_Q, t(A))                       # m x pr
+  ll <- -0.5 * sum(B^2) / n
+
+  # ---- P_NC ----
+  dtau <- diff(tau)
+  DF <- sweep(ETA[, 2:m, drop = FALSE] - ETA[, 1:(m - 1L), drop = FALSE], 2, dtau, "/")
+  pen_nc <- as.numeric(sd$lambda_nc) * sum(pmax(0, -DF)) / (n * (m - 1L))
+
+  # ---- P_IQ, Eq. (15): exact |d| ----
+  lam_iq <- sqrt(as.numeric(sd$lambda_iq2))
+  pen_iq <- 0
+  if (lam_iq > 0) {
+    tot <- 0; ncomp <- 0L
+    if (r > 0) {
+      dg <- abs(gamma[2:m, , drop = FALSE] - gamma[1:(m - 1L), , drop = FALSE])
+      tot <- tot + sum(sd$w_iq_gamma * dg) / (r * (m - 1L)); ncomp <- ncomp + 1L
+    }
+    if (p_slope > 0) {
+      db <- abs(betaX[2:m, 1:p_slope, drop = FALSE] - betaX[1:(m - 1L), 1:p_slope, drop = FALSE])
+      tot <- tot + sum(sd$w_iq_beta * db) / (p_slope * (m - 1L)); ncomp <- ncomp + 1L
+    }
+    if (ncomp > 0L) pen_iq <- lam_iq * tot / ncomp
+  }
+
+  # ---- helpers for the hierarchies ----
+  dinvgamma_log <- function(x, a, b) a * log(b) - lgamma(a) - (a + 1) * log(x) - b / x
+  dlaplace_log  <- function(x, s) -log(2 * s) - abs(x) / s
+  log_mix <- function(pi, l1, l2) { mx <- pmax(l1, l2); mx + log(pi * exp(l1 - mx) + (1 - pi) * exp(l2 - mx)) }
+  shape_grp <- (m + 1L) %/% 2L   # Stan's (m + 1) / 2 is INTEGER division for int m
+
+  # ---- log pi(gamma) ----
+  lp_gamma <- 0
+  if (r > 0) {
+    pc <- as.integer(sd$prior_code)
+    eff <- as.numeric(sd$lambda_lasso2_fixed)
+    if (!(pc %in% c(3L, 5L, 6L)) && as.integer(sd$adaptive_gamma) == 1L) {
+      ll2 <- gs("lambda_lasso2")
+      lp_gamma <- lp_gamma + dgamma(ll2, shape = sd$lambda_lasso2_a, rate = sd$lambda_lasso2_b, log = TRUE)
+      eff <- ll2
+    }
+    if (pc == 1L) {
+      s2g <- gv("sigma2_gamma_group", r)
+      lp_gamma <- lp_gamma + sum(dgamma(s2g, shape = shape_grp, rate = 0.5 * eff, log = TRUE)) +
+        sum(dnorm(gamma, 0, matrix(sqrt(s2g), m, r, byrow = TRUE), log = TRUE))
+    } else if (pc == 2L) {
+      s2 <- gm("sigma2_gamma", m, r)
+      lp_gamma <- lp_gamma + sum(dexp(s2, rate = 0.5 * eff, log = TRUE)) + sum(dnorm(gamma, 0, sqrt(s2), log = TRUE))
+    } else if (pc == 5L) {
+      l2l <- gm("lambda2_gamma_local", m, r); s2 <- gm("sigma2_gamma", m, r)
+      lp_gamma <- lp_gamma + sum(dgamma(l2l, shape = sd$lambda_lasso2_a, rate = sd$lambda_lasso2_b, log = TRUE)) +
+        sum(dexp(s2, rate = 0.5 * l2l, log = TRUE)) + sum(dnorm(gamma, 0, sqrt(s2), log = TRUE))
+    } else if (pc == 3L) {
+      pi_s <- gs("pi_slab")
+      lp_gamma <- lp_gamma + dbeta(pi_s, sd$slab_pi_a, sd$slab_pi_b, log = TRUE) +
+        sum(log_mix(pi_s, dnorm(gamma, 0, sd$slab_sd, log = TRUE), dnorm(gamma, 0, sd$spike_sd, log = TRUE)))
+    } else if (pc == 4L) {
+      om <- gv("omega_group", r); s2 <- gm("sigma2_gamma", m, r)
+      lp_gamma <- lp_gamma + sum(dinvgamma_log(om, 0.5, 0.5 * eff)) +
+        sum(dexp(s2, rate = 0.5 * matrix(om, m, r, byrow = TRUE), log = TRUE)) +
+        sum(dnorm(gamma, 0, sqrt(s2), log = TRUE))
+    } else if (pc == 6L) {
+      pi_s <- gs("pi_slab")
+      lp_gamma <- lp_gamma + dbeta(pi_s, sd$slab_pi_a, sd$slab_pi_b, log = TRUE) +
+        sum(log_mix(pi_s, dlaplace_log(gamma, sd$slab_sd / sqrt(2)), dlaplace_log(gamma, sd$spike_sd / sqrt(2))))   # variance = sd^2, Appendix B
+    }
+  }
+
+  # ---- log pi(eta0): beta0 and betaX ----
+  lp_eta0 <- sum(dnorm(beta0, as.numeric(sd$beta0_loc), as.numeric(sd$beta0_scale), log = TRUE))
+  if (px > 0) {
+    pb <- as.integer(sd$prior_beta_code)
+    effb <- as.numeric(sd$lambda_beta2_fixed)
+    if (pb %in% c(2L, 4L, 5L) && as.integer(sd$adaptive_beta) == 1L) {
+      lb2 <- gs("lambda_beta2")
+      lp_eta0 <- lp_eta0 + dgamma(lb2, shape = sd$lambda_beta2_a, rate = sd$lambda_beta2_b, log = TRUE)
+      effb <- lb2
+    }
+    if (pb == 1L) {
+      lp_eta0 <- lp_eta0 + sum(dnorm(betaX, 0, as.numeric(sd$beta_sd), log = TRUE))
+    } else if (pb == 2L) {
+      s2 <- gm("sigma2_beta", m, px)
+      lp_eta0 <- lp_eta0 + sum(dexp(s2, rate = 0.5 * effb, log = TRUE)) + sum(dnorm(betaX, 0, sqrt(s2), log = TRUE))
+    } else if (pb == 6L) {
+      l2l <- gm("lambda2_beta_local", m, px); s2 <- gm("sigma2_beta", m, px)
+      lp_eta0 <- lp_eta0 + sum(dgamma(l2l, shape = sd$lambda_beta2_a, rate = sd$lambda_beta2_b, log = TRUE)) +
+        sum(dexp(s2, rate = 0.5 * l2l, log = TRUE)) + sum(dnorm(betaX, 0, sqrt(s2), log = TRUE))
+    } else if (pb == 3L) {
+      pi_b <- gs("pi_slab_beta")
+      lp_eta0 <- lp_eta0 + dbeta(pi_b, sd$beta_slab_pi_a, sd$beta_slab_pi_b, log = TRUE) +
+        sum(log_mix(pi_b, dnorm(betaX, 0, sd$beta_slab_sd, log = TRUE), dnorm(betaX, 0, sd$beta_spike_sd, log = TRUE)))
+    } else if (pb == 4L) {
+      s2g <- gv("sigma2_beta_group", px)
+      lp_eta0 <- lp_eta0 + sum(dgamma(s2g, shape = shape_grp, rate = 0.5 * effb, log = TRUE)) +
+        sum(dnorm(betaX, 0, matrix(sqrt(s2g), m, px, byrow = TRUE), log = TRUE))
+    } else if (pb == 5L) {
+      om <- gv("omega_beta_group", px); s2 <- gm("sigma2_beta", m, px)
+      lp_eta0 <- lp_eta0 + sum(dinvgamma_log(om, 0.5, 0.5 * effb)) +
+        sum(dexp(s2, rate = 0.5 * matrix(om, m, px, byrow = TRUE), log = TRUE)) +
+        sum(dnorm(betaX, 0, sqrt(s2), log = TRUE))
+    }
+  }
+  # u ~ beta(1, 1) has log density 0 on (0, 1).
+
+  # ---- data Jacobian of the log transform (as in the model block) ----
+  jac <- 0
+  if (logf) jac <- if (jit) -sum(log(y + u)) else -sum(log(y))
+
+  total <- ll - pen_nc - pen_iq + lp_gamma + lp_eta0 + jac
+  list(total = total, loglik = ll, pen_nc = pen_nc, pen_iq = pen_iq,
+       lp_gamma = lp_gamma, lp_eta0 = lp_eta0, jacobian = jac)
+}
+
 .bqq_iq_draws <- function(res) {
   ls <- res$laplace_samples
   if (!is.null(ls) && (!is.null(ls$gamma) || !is.null(ls$beta))) {
@@ -239,6 +481,36 @@
 #'   handful of iterations; after a switch to the recursion, allow several dozen.
 #' @param iq_em_tol Relative-change tolerance on \eqn{\lambda_{iq}^2} for declaring EM
 #'   convergence (default 1e-2 since 0.6.3; was 1e-3).
+#' @param iq_smooth Smoothing constant of the absolute value in the interquantile
+#'   penalty inside the optimizer: |d| is replaced by sqrt(d^2 + iq_smooth^2) so that
+#'   the objective is differentiable at fused solutions and warm restarts move
+#'   (default 1e-4; 0 restores the exact absolute value). The EM monitor \code{lp17}
+#'   always uses the exact absolute value of Eq. (15).
+#' @param iq_em_inner_iter \code{NULL} (default): within every EM iteration the optimizer
+#'   runs to its own stopping rule. An integer caps the L-BFGS iterations of EVERY
+#'   EM step's optimizer call at that value; \code{1} gives the pattern one optimizer
+#'   iteration, one EM update, repeat (each call continues from the previous solution
+#'   but rstan restarts the L-BFGS memory). Tested in the ar_ext5 smoke test
+#'   (2026-09-04); the E-step then evaluates the Laplace approximation at a point that
+#'   is not the mode, so the trace should be read with that in mind.
+#' @param iq_em_estep How the E-step expectation E|d| of Appendix C, Eq. (C.6), is
+#'   evaluated. \code{"closed"} (default): the folded-normal mean of each adjacent
+#'   difference under the Laplace approximation, E|d| = s sqrt(2/pi) exp(-dhat^2/(2 s^2))
+#'   + |dhat| (1 - 2 Phi(-|dhat|/s)), with dhat the difference of the modes and s its
+#'   Laplace standard deviation -- exact under the approximation and free of Monte
+#'   Carlo noise (|d|/s is a noncentral chi with one degree of freedom).
+#'   \code{"draws"}: the average of |d| over the \code{laplace_n_samples} draws.
+#'   Fits without a Laplace covariance (\code{"mcmc"}, \code{"map_mcmc"}, Hessian
+#'   failure) always use the draws. The trace records both values.
+#' @param iq_em_lp_tol Stopping rule of the EM chain: the chain stops as soon as the
+#'   relative gain in the complete-data log posterior -- manuscript Eq. (17) plus the
+#'   normalizing term \eqn{r(m-1) \log \lambda_{iq}} of the fused prior (Appendix C,
+#'   Eq. C.1), recomputed exactly at the step's solution (trace columns \code{lp_cd},
+#'   \code{lp_cd_gain}; Eq. 17 alone in \code{lp17}) -- is below this fraction of the
+#'   previous value's magnitude (floored at 1). Default 1e-2, the classic loose EM
+#'   criterion and the same 1\% used for \code{iq_em_tol}. The term is constant within a
+#'   fit, so the inner optimization is unchanged, and it is a constant when
+#'   \code{adaptive_iq = FALSE}. \code{iq_em_tol} remains a secondary stop.
 #' @param iq_em_step How \eqn{\lambda_{iq}^2} is updated at each iteration.
 #'   \code{"fixedpoint"} (the behaviour from 0.5.2 to 0.6.2, Eq. (C.9) of the
 #'   manuscript) jumps to the fixed point \eqn{(N/\bar S)^2} of the M-step recursion at
@@ -251,13 +523,19 @@
 #'   to \code{"recursion"} for the remaining iterations the first time the update
 #'   reverses direction by a relative change of at least \code{iq_em_switch_tol};
 #'   \code{iq_em$switched_at} records the iteration.
-#' @param iq_em_warm Logical (default FALSE). Start the MAP optimization of each EM
-#'   iteration after the first at the previous iteration's solution instead of the
-#'   \code{map_init} start. Off by default because the fused penalty places the
-#'   MAP on kinks of the objective: restarted there, L-BFGS fails its first line
-#'   search and returns the start unchanged, so the coefficients stop updating
-#'   and only lambda_iq moves. Before 0.6.5 the option had no effect for
-#'   \code{fit_method = "map"}; every EM iteration started from \code{map_init}.
+#'   Default \code{"fixedpoint"} (Appendix C, Eq. C.9): with the warm chain and the
+#'   Eq. (17) stopping rule no reversal was observed on ARCOS l = 182 or l = 365
+#'   (2026-09-04), so the hybrid switch is no longer needed; it is kept as an option.
+#' @param iq_em_warm_jitter The estimation is one chain: the optimizer starts at the
+#'   pilot initialization of Section 2.4 once, and every EM iteration after the first
+#'   starts the MAP optimization at the previous iteration's full solution
+#'   (coefficients and hierarchy latents). If the optimizer returns that start
+#'   unchanged (a failed first line search on a kink of the fused penalty), it is
+#'   restarted from the same solution with a small jitter on the unbounded
+#'   coefficients; \code{iq_em_warm_jitter} gives the jitter standard deviations
+#'   tried in order. The trace column \code{warm_status} records "start" (first
+#'   iteration), "moved", "jitter<k>" or "stalled". The chain applies to
+#'   \code{fit_method = "map"} and to the MAP stage of \code{"map_mcmc"}.
 #' @param iq_em_switch_tol Relative change that counts as an oscillation for the
 #'   \code{"hybrid"} switch (default 0.5). Reversals smaller than this are left to
 #'   the Monte-Carlo floor rule of \code{iq_em_mc_tol}.
@@ -280,11 +558,14 @@
 #'   beta-side LASSO-type shrinkage hierarchy.
 #' @param lambda_beta2_fixed Positive scalar; fixed value for the beta-side shrinkage
 #'   level \eqn{\lambda_\beta^2} when \code{adaptive_beta = FALSE} (default 1).
-#' @param lambda_lasso2_a,lambda_lasso2_b Positive shape/rate hyperparameters for the
-#'   LASSO-type shrinkage hierarchy. Their exact role depends on \code{prior_gamma}:
-#'   they govern the global \eqn{\lambda^2} prior for \code{"lasso"}, \code{"group_lasso"},
-#'   and \code{"het_group_lasso"}, and the global hyperprior driving the local
-#'   coefficient-specific shrinkage in \code{"adaptive_lasso"}.
+#' @param lambda_lasso2_a,lambda_lasso2_b Positive shape/rate hyperparameters of the
+#'   conjugate gamma hyperprior on the rates of the LASSO-type priors (Appendix B).
+#'   For \code{"lasso"}, \code{"group_lasso"} and \code{"het_group_lasso"} they are
+#'   the prior of the global rate \eqn{\lambda^2 \sim Gamma(a_\lambda, b_\lambda)}
+#'   (Park and Casella, 2008, Sec. 3.2). For \code{"adaptive_lasso"} they are the prior
+#'   of every local rate directly, \eqn{\lambda^2_{q,j} \sim Gamma(a_\lambda, b_\lambda)}
+#'   (Leng, Tran and Nott, 2014, Eq. 7); the adaptive LASSO has no global rate, so
+#'   \code{adaptive_gamma} and \code{lambda_lasso2_fixed} do not affect it.
 #' @param adaptive_gamma Logical; if TRUE (default), the global shrinkage level
 #'   \eqn{\lambda^2} is learned from data via a Gamma prior. If FALSE, the fixed
 #'   value \code{lambda_lasso2_fixed} is used.
@@ -372,7 +653,10 @@
 #' @param spike_sd,slab_sd,slab_pi_a,slab_pi_b Spike-and-slab hyperparameters.
 #'   NOTE: \code{spike_sd}/\code{slab_sd} are STANDARD DEVIATIONS; the
 #'   manuscript's spike-and-slab specification is written in variances
-#'   (variance = sd^2).
+#'   (variance = sd^2). For \code{prior_gamma = "spike_slab_lasso"} the Laplace
+#'   components are parametrized so that their variances are likewise
+#'   \code{spike_sd^2} and \code{slab_sd^2} (Laplace scale = sd / sqrt(2)), as in
+#'   Appendix B.
 #'
 #'   \code{spike_sd} defaults to \strong{0.1} (raised from 0.05 in 0.5.2). A
 #'   narrower spike makes the null mixture component close to a point mass, so
@@ -406,9 +690,11 @@
 #'       \code{update}, \code{n_diff} (the number of penalized differences \eqn{N}),
 #'       \code{lambda_iq2} (final, matching the returned fit), \code{lambda_iq2_next}
 #'       (the update the last iteration proposed), \code{Sbar}, \code{converged},
-#'       \code{n_iter}, \code{note}, and \code{trace} -- a data frame with one row per
+#'       \code{n_iter}, \code{lp_tol} (the \code{iq_em_lp_tol} used), \code{note}, and
+#'       \code{trace} -- a data frame with one row per
 #'       EM iteration recording \code{lambda_iq2}, \code{lambda_iq}, \code{Sbar},
-#'       \code{lambda_iq2_next} and \code{rel_change}.
+#'       \code{lambda_iq2_next}, \code{rel_change}, \code{warm_status}, \code{lp17}
+#'       (Eq. 17 recomputed at the step's solution) and \code{lp17_gain}.
 #'   }
 #'
 #' @references
@@ -446,8 +732,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
                         iq_em_max_iter = 60,
                         iq_em_tol = 1e-2,
                         iq_em_mc_tol = 0.02,
-                        iq_em_step = c("hybrid", "recursion", "fixedpoint"),
-                        iq_em_warm = FALSE,
+                        iq_em_step = c("fixedpoint", "hybrid", "recursion"),
                         iq_em_switch_tol = 0.5,
                         adaptive_beta = TRUE,
                         lambda_beta2_a = 1, lambda_beta2_b = 0.05,
@@ -478,10 +763,18 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
                         beta_spike_sd = 0.1, beta_slab_sd = 2.0,
                         beta_slab_pi_a = 1, beta_slab_pi_b = 1,
                         spike_sd = 0.1, slab_sd = 2.0,
-                        slab_pi_a = 1, slab_pi_b = 1) {
+                        slab_pi_a = 1, slab_pi_b = 1,
+                        # arguments new in the experimental build, kept last so that
+                        # positional calls written for 0.6.5 bind unchanged
+                        iq_smooth = 1e-4,
+                        iq_em_lp_tol = 1e-2,
+                        iq_em_warm_jitter = c(0.01, 0.02, 0.05),
+                        iq_em_estep = c("closed", "draws"),
+                        iq_em_inner_iter = NULL) {
 
   prior_beta   <- match.arg(prior_beta)
   prior_gamma  <- match.arg(prior_gamma)
+  iq_em_estep  <- match.arg(iq_em_estep)
   fit_method   <- match.arg(fit_method)
   map_init     <- match.arg(map_init)
 
@@ -492,6 +785,20 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
   if (isTRUE(adaptive_iq) && !is.null(lambda_iq2) && lambda_iq2 <= 0) {
     stop("lambda_iq2 must be > 0 when adaptive_iq = TRUE: it is the EM starting value, ",
          "and the recursion has an absorbing fixed point at 0.")
+  }
+  if (!is.numeric(iq_smooth) || length(iq_smooth) != 1L || !is.finite(iq_smooth) || iq_smooth < 0) {
+    stop("iq_smooth must be a single finite non-negative number (0 = exact absolute value).")
+  }
+  if (!is.numeric(iq_em_lp_tol) || length(iq_em_lp_tol) != 1L || !is.finite(iq_em_lp_tol) || iq_em_lp_tol < 0) {
+    stop("iq_em_lp_tol must be a single finite non-negative number.")
+  }
+  if (!is.null(iq_em_inner_iter) && (!is.numeric(iq_em_inner_iter) || length(iq_em_inner_iter) != 1L ||
+      !is.finite(iq_em_inner_iter) || iq_em_inner_iter < 1)) {
+    stop("iq_em_inner_iter must be NULL (optimizer runs to its own stopping rule) or a single integer >= 1.")
+  }
+  if (!is.numeric(iq_em_warm_jitter) || any(!is.finite(iq_em_warm_jitter)) || any(iq_em_warm_jitter < 0)) {
+    stop("iq_em_warm_jitter must be a numeric vector of finite non-negative standard deviations ",
+         "(an empty vector disables the jittered retries).")
   }
   prior_beta_code <- switch(
     prior_beta,
@@ -578,6 +885,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
       // square root. Held fixed within a fit; when adaptive_iq = 1 the value is
       // updated between fits by the EM recursion in getModel() (see .bqq_iq_em_step).
       real<lower=0> lambda_iq2;        // SQUARED L1 fusion weight on adjacent-quantile differences
+      real<lower=0> iq_smooth2;        // squared smoothing constant of the absolute value in the IQ penalty
 
       real<lower=0> lambda_lasso2_a;
       real<lower=0> lambda_lasso2_b;
@@ -589,8 +897,8 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
       int<lower=0, upper=1> adaptive_beta;       // 1 = data-adaptive, 0 = fixed
       real<lower=0> lambda_beta2_fixed;          // fixed value when adaptive_beta = 0
 
-      real<lower=0, upper = 1> jittering;
-      real<lower=0, upper = 1> log_flag;
+      int<lower=0, upper=1> jittering;
+      int<lower=0, upper=1> log_flag;
 
       // prior selectors
       int<lower=1, upper=6> prior_beta_code;
@@ -672,23 +980,25 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
       // H-coefficients
       matrix[m, r] gamma;
 
+      // Hierarchy latents exist only for the prior that uses them (size 0 otherwise),
+      // so the Hessian is over the active parameters only.
       // Group-level scale for beta group lasso (one per X column)
-      vector<lower=0>[px] sigma2_beta_group;
+      vector<lower=0>[px * (prior_beta_code == 4)] sigma2_beta_group;
 
-      // Element-wise local scales for beta lasso/adaptive lasso
-      matrix<lower=0>[m, px] sigma2_beta;
+      // Element-wise local scales for beta lasso / hetero group / adaptive lasso
+      matrix<lower=0>[m, px * (prior_beta_code == 2 || prior_beta_code == 5 || prior_beta_code == 6)] sigma2_beta;
 
       // Local adaptive shrinkage rates for beta adaptive lasso
-      matrix<lower=0>[m, px] lambda2_beta_local;
+      matrix<lower=0>[m, px * (prior_beta_code == 6)] lambda2_beta_local;
 
       // Group-level scale for group lasso (one per H column)
-      vector<lower=0>[r] sigma2_gamma_group;
+      vector<lower=0>[r * (prior_code == 1)] sigma2_gamma_group;
 
-      // Element-wise local scales for lasso/adaptive lasso
-      matrix<lower=0>[m, r] sigma2_gamma;
+      // Element-wise local scales for lasso / hetero group / adaptive lasso
+      matrix<lower=0>[m, r * (prior_code == 2 || prior_code == 4 || prior_code == 5)] sigma2_gamma;
 
       // Local adaptive shrinkage rates for adaptive lasso
-      matrix<lower=0>[m, r] lambda2_gamma_local;
+      matrix<lower=0>[m, r * (prior_code == 5)] lambda2_gamma_local;
 
       // Global beta shrinkage rate (learned when adaptive_beta = 1)
       real<lower=0> lambda_beta2;
@@ -701,14 +1011,14 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
       real<lower=0, upper=1> pi_slab;
 
       // Group-level mixer for beta hetero group lasso
-      vector<lower=0>[px] omega_beta_group;
+      vector<lower=0>[px * (prior_beta_code == 5)] omega_beta_group;
 
       // Group-level mixer for hetero group lasso (Levy)
       // One per time block (consistent with group lasso grouping)
-      vector<lower=0>[r] omega_group;
+      vector<lower=0>[r * (prior_code == 4)] omega_group;
 
-      // jitter variable
-      vector<lower=1e-12, upper = 1>[n] u;
+      // jitter variable (only when jittering = 1)
+      vector<lower=1e-12, upper = 1>[n * jittering] u;
   }
 
   transformed parameters {
@@ -765,16 +1075,11 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
             }
           }
         } else if (prior_beta_code == 6) {
-          real lambda_beta2_eff;
-          if (adaptive_beta == 1) {
-            lambda_beta2 ~ gamma(lambda_beta2_a, lambda_beta2_b);
-            lambda_beta2_eff = lambda_beta2;
-          } else {
-            lambda_beta2_eff = lambda_beta2_fixed;
-          }
+          // adaptive lasso on the slopes: local rates with the gamma hyperprior
+          // directly (Leng, Tran & Nott 2014, Eq. 7); no global rate in this branch
           for (j in 1:m) {
             for (i in 1:px) {
-              lambda2_beta_local[j, i] ~ gamma(1, lambda_beta2_eff);
+              lambda2_beta_local[j, i] ~ gamma(lambda_beta2_a, lambda_beta2_b);
               sigma2_beta[j, i] ~ exponential(0.5 * lambda2_beta_local[j, i]);
               betaX[j, i] ~ normal(0, sqrt(sigma2_beta[j, i]));
             }
@@ -860,8 +1165,12 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
       if (r > 0) {
 
         // Determine effective lambda_lasso2 value for lasso-type priors.
+        // Global rate lambda^2 with its gamma hyperprior (Park & Casella 2008, Sec. 3.2):
+        // used by the LASSO, group LASSO and heterogeneous group LASSO. The adaptive
+        // LASSO (code 5) has no global rate: each local rate carries the gamma
+        // hyperprior directly (Leng, Tran & Nott 2014, Eq. 7) -- Appendix B.
         real lambda_lasso2_eff;
-        if (prior_code != 3 && prior_code != 6) {
+        if (prior_code != 3 && prior_code != 5 && prior_code != 6) {
           if (adaptive_gamma == 1) {
             lambda_lasso2 ~ gamma(lambda_lasso2_a, lambda_lasso2_b);
             lambda_lasso2_eff = lambda_lasso2;
@@ -890,11 +1199,13 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
             }
           }
 
-        // 5 = adaptive lasso with coefficient-specific local shrinkage
+        // 5 = adaptive lasso with coefficient-specific local rates, each with the
+        //     conjugate gamma hyperprior Gamma(a, b) of Leng, Tran & Nott (2014), Eq. (7)
+        //     (their r = a, delta = b); no global rate in this branch (Appendix B).
         } else if (prior_code == 5) {
           for (j in 1:m) {
             for (i in 1:r) {
-              lambda2_gamma_local[j, i] ~ gamma(1, lambda_lasso2_eff);
+              lambda2_gamma_local[j, i] ~ gamma(lambda_lasso2_a, lambda_lasso2_b);
               sigma2_gamma[j, i] ~ exponential(0.5 * lambda2_gamma_local[j, i]);
               gamma[j, i] ~ normal(0, sqrt(sigma2_gamma[j, i]));
             }
@@ -935,10 +1246,13 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
           pi_slab ~ beta(slab_pi_a, slab_pi_b);
           for (j in 1:m) {
             for (i in 1:r) {
+              // Appendix B writes the components as Laplace(0, sigma^2) with sigma^2 a
+              // VARIANCE; Stan's double_exponential takes the scale b, Var = 2 b^2,
+              // so b = sigma / sqrt(2) (author's alignment ruling, 2026-09-04).
               target += log_mix(
                 pi_slab,
-                double_exponential_lpdf(gamma[j, i] | 0, slab_sd),
-                double_exponential_lpdf(gamma[j, i] | 0, spike_sd)
+                double_exponential_lpdf(gamma[j, i] | 0, slab_sd / sqrt2()),
+                double_exponential_lpdf(gamma[j, i] | 0, spike_sd / sqrt2())
               );
             }
           }
@@ -986,7 +1300,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
           if (r > 0) {
             for (j in 1:r) {
               for (q in 2:m) {
-                pen_iq_gamma += w_iq_gamma[q-1, j] * fabs(gamma[q, j] - gamma[q-1, j]);
+                pen_iq_gamma += w_iq_gamma[q-1, j] * sqrt(square(gamma[q, j] - gamma[q-1, j]) + iq_smooth2);
               }
             }
             pen_iq_gamma /= (r * (m - 1));
@@ -999,7 +1313,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
           if (p_slope > 0) {
             for (j in 1:p_slope) {
               for (q in 2:m) {
-                pen_iq_beta += w_iq_beta[q-1, j] * fabs(beta[q, j+1] - beta[q-1, j+1]);
+                pen_iq_beta += w_iq_beta[q-1, j] * sqrt(square(beta[q, j+1] - beta[q-1, j+1]) + iq_smooth2);
               }
             }
             pen_iq_beta /= (p_slope * (m - 1));
@@ -1193,13 +1507,14 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
     base_scale = base_scale, c_sigma = c_sigma, beta_sd = beta_sd,
     lambda_nc = lambda_nc,
     lambda_iq2 = lambda_iq2,                      # SQUARED IQ fusion weight (rate = sqrt)
+    iq_smooth2 = iq_smooth^2,
     lambda_beta2_a = lambda_beta2_a, lambda_beta2_b = lambda_beta2_b,
     adaptive_beta = as.integer(adaptive_beta),
     lambda_beta2_fixed = lambda_beta2_fixed,
     lambda_lasso2_a = lambda_lasso2_a, lambda_lasso2_b = lambda_lasso2_b,
     adaptive_gamma = as.integer(adaptive_gamma),
     lambda_lasso2_fixed = lambda_lasso2_fixed,
-    log_flag = log_flag, jittering = jittering,
+    log_flag = as.integer(log_flag), jittering = as.integer(jittering),
     prior_beta_code = prior_beta_code,
     prior_code = prior_code,
     beta_spike_sd = beta_spike_sd,
@@ -1220,21 +1535,32 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
   # neutral values. The smoothed score saturates (|z| clamped at 20) once a curve
   # sits ~20 bandwidths from the data, leaving zero gradient there; random inits
   # can start in (or reach) these flat regions and yield runaway MAP modes.
+  # Sizes of the hierarchy latents follow the Stan parameter block: a latent
+  # exists only for the prior that uses it (size 0 otherwise); u only if jittering.
+  n_bg <- if (prior_beta_code == 4L) px else 0L
+  n_b  <- if (prior_beta_code %in% c(2L, 5L, 6L)) px else 0L
+  n_bl <- if (prior_beta_code == 6L) px else 0L
+  n_gg <- if (prior_code == 1L) r else 0L
+  n_g  <- if (prior_code %in% c(2L, 4L, 5L)) r else 0L
+  n_gl <- if (prior_code == 5L) r else 0L
+  n_ob <- if (prior_beta_code == 5L) px else 0L
+  n_og <- if (prior_code == 4L) r else 0L
+  n_u  <- if (as.integer(jittering) == 1L) n else 0L
   init_prior_center <- list(
     beta0 = as.array(beta0_loc),
     betaX = matrix(0, m, px),
     gamma = matrix(0, m, r),
-    sigma2_beta_group = as.array(rep(1, px)),
-    sigma2_beta = matrix(1, m, px),
-    lambda2_beta_local = matrix(1, m, px),
-    sigma2_gamma_group = as.array(rep(1, r)),
-    sigma2_gamma = matrix(1, m, r),
-    lambda2_gamma_local = matrix(1, m, r),
+    sigma2_beta_group = as.array(rep(1, n_bg)),
+    sigma2_beta = matrix(1, m, n_b),
+    lambda2_beta_local = matrix(1, m, n_bl),
+    sigma2_gamma_group = as.array(rep(1, n_gg)),
+    sigma2_gamma = matrix(1, m, n_g),
+    lambda2_gamma_local = matrix(1, m, n_gl),
     lambda_beta2 = 1, lambda_lasso2 = 1,
     pi_slab_beta = 0.5, pi_slab = 0.5,
-    omega_beta_group = as.array(rep(1, px)),
-    omega_group = as.array(rep(1, r)),
-    u = as.array(rep(0.5, n))
+    omega_beta_group = as.array(rep(1, n_ob)),
+    omega_group = as.array(rep(1, n_og)),
+    u = as.array(rep(0.5, n_u))
   )
 
   # Pilot-based initialization (map_init = "pilot"): marginal LASSO quantile
@@ -1429,6 +1755,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
 
     # --- Try proper Hessian-based Laplace approximation ---
     laplace_ok <- FALSE
+    eta_mean <- NULL; eta_cov <- NULL; eta_names <- NULL
     beta_array <- NULL
     gamma_array <- NULL
 
@@ -1492,6 +1819,9 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
         eig$values <- pmax(eig$values, 1e-8)
         n_eta <- length(eig$values)
         L <- t(eig$vectors %*% diag(sqrt(eig$values), nrow = n_eta, ncol = n_eta))
+        # the covariance the draws are actually generated from (floored), kept for the
+        # closed-form E-step (.bqq_iq_Sbar_closed)
+        Sigma_pd <- eig$vectors %*% diag(eig$values, nrow = n_eta, ncol = n_eta) %*% t(eig$vectors)
 
         # Sample from MVN on unconstrained scale
         theta_unc_sub <- theta_unc_full[eta_param_idx]
@@ -1531,7 +1861,9 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
                            max(gamma_parsed$row), max(gamma_parsed$col), n_samples)
         } else NULL
 
-        list(beta = beta_arr, gamma = gamma_arr)
+        list(beta = beta_arr, gamma = gamma_arr,
+             eta_mean = theta_unc_full[eta_param_idx], eta_cov = Sigma_pd,
+             eta_names = raw_par_names[eta_param_idx])
 
       }, error = function(e) {
         warning("Hessian-based Laplace failed: ", conditionMessage(e),
@@ -1542,6 +1874,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
       if (!is.null(laplace_result)) {
         beta_array <- laplace_result$beta
         gamma_array <- laplace_result$gamma
+        eta_mean <- laplace_result$eta_mean; eta_cov <- laplace_result$eta_cov; eta_names <- laplace_result$eta_names
         laplace_ok <- TRUE
       }
     }
@@ -1574,7 +1907,9 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
       }
     }
 
-    list(mu = NULL, beta = beta_array, gamma = gamma_array)
+    if (!laplace_ok) { eta_mean <- NULL; eta_cov <- NULL; eta_names <- NULL }
+    list(mu = NULL, beta = beta_array, gamma = gamma_array,
+         eta_mean = eta_mean, eta_cov = eta_cov, eta_names = eta_names)
   }
 
   # ------------------------------------------------------------------
@@ -1583,7 +1918,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
   # repeatedly. EM sits OUTSIDE the fit: it updates lambda_iq2 between
   # refits and touches no Stan code.
   # ------------------------------------------------------------------
-  run_one_fit <- function(stan_data, warm = NULL) {
+  run_one_fit <- function(stan_data, warm = NULL, inner_iter = NULL) {
     fit <- NULL
     map_fit <- NULL
     hessian <- NULL
@@ -1605,6 +1940,12 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
     if (!is.null(draws$beta)) map_fit$par$beta <- apply(draws$beta, c(2, 3), median)
     if (!is.null(draws$gamma)) map_fit$par$gamma <- apply(draws$gamma, c(2, 3), median)
     map_fit$estimator <- "posterior_median"
+    # Posterior medians of EVERY parameter, Stan-named, so that the EM monitor
+    # (Eq. 17 at the point estimate) is available for this method as well.
+    map_fit$par_vec <- tryCatch({
+      sm_ <- rstan::summary(fit)$summary
+      v <- stats::setNames(sm_[, "50%"], rownames(sm_)); v[names(v) != "lp__"]
+    }, error = function(e) NULL)
 
   # ------------------------------------------------------------------
   # fit_method = "map_mcmc": MAP estimators, MCMC posterior draws
@@ -1628,8 +1969,10 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
     if (!is.null(map_tol_rel_obj))   opt_args$tol_rel_obj   <- map_tol_rel_obj
     if (!is.null(map_history_size)) opt_args$history_size  <- map_history_size
     if (!is.null(map_iter))          opt_args$iter          <- map_iter
+    if (!is.null(inner_iter))        opt_args$iter          <- as.integer(inner_iter)
     map_fit <- run_optimizing(opt_args)
     map_fit$estimator <- "map"
+    map_fit$par_vec <- .bqq_par_as_vector(map_fit$par)
 
     hessian <- if (map_hessian && !is.null(map_fit$hessian)) map_fit$hessian else NULL
 
@@ -1663,8 +2006,10 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
     if (!is.null(map_tol_rel_obj))   opt_args$tol_rel_obj   <- map_tol_rel_obj
     if (!is.null(map_history_size)) opt_args$history_size  <- map_history_size
     if (!is.null(map_iter))          opt_args$iter          <- map_iter
+    if (!is.null(inner_iter))        opt_args$iter          <- as.integer(inner_iter)
     map_fit <- run_optimizing(opt_args)
     map_fit$estimator <- "map"
+    map_fit$par_vec <- map_fit$par
     map_fit$coverage <- map_coverage_check(map_fit$par)
 
     hessian <- if (map_hessian && !is.null(map_fit$hessian)) map_fit$hessian else NULL
@@ -1692,9 +2037,9 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
   iq_em <- list(
     adaptive        = isTRUE(adaptive_iq),
     update          = iq_em_step,
-    warm_iterations = isTRUE(iq_em_warm),
     switched_at     = NA_integer_,
     n_diff          = n_iq_diff,
+    lp_tol          = iq_em_lp_tol,
     lambda_iq2      = lambda_iq2,
     lambda_iq2_next = NA_real_,
     Sbar            = NA_real_,
@@ -1723,20 +2068,26 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
     for (s in seq_len(iq_em_max_iter)) {
       stan_data$lambda_iq2 <- cur
       warm <- NULL
-      # Until 0.6.5 this branch never fired for fit_method = "map": the MAP is
-      # returned as a named vector (as_vector = TRUE), so is.list() was FALSE, and
-      # the map branch of run_one_fit ignored `warm` anyway. Every fit therefore
-      # started from the pilot. Kept off by default: see the argument's help.
-      if (isTRUE(iq_em_warm) && s > 1L && fit_method == "map" && !is.null(res)) {
+      # One chain (author's ruling 2026-09-04): the pilot initialization of Sec. 2.4
+      # starts the iterations once; every step after the first starts the optimizer at
+      # the previous step's full MAP (coefficients AND every hierarchy latent, including
+      # the true scalars lambda_beta2, lambda_lasso2, pi_slab_beta, pi_slab, which Stan
+      # names without brackets). Applies to "map" (named vector, as_vector = TRUE) and to
+      # the MAP stage of "map_mcmc" (list, as_vector = FALSE). Zero-length blocks
+      # (px = 0 or r = 0) are skipped.
+      if (s > 1L && fit_method %in% c("map", "map_mcmc") && !is.null(res)) {
         pv <- res$map$par
         if (is.list(pv)) {
           keep <- intersect(names(pv), names(init_used))
+          keep <- keep[vapply(keep, function(nm) length(init_used[[nm]]) > 0L, logical(1))]
           if (length(keep)) warm <- pv[keep]
         } else if (is.numeric(pv) && !is.null(names(pv))) {
           warm <- list()
           for (nm in names(init_used)) {
-            idx <- which(startsWith(names(pv), paste0(nm, "[")))
             tmpl <- init_used[[nm]]
+            if (length(tmpl) == 0L) next
+            if (nm %in% names(pv)) { warm[[nm]] <- unname(pv[[nm]]); next }   # true scalar
+            idx <- which(startsWith(names(pv), paste0(nm, "[")))
             if (length(idx) == length(tmpl)) {
               v <- unname(pv[idx])
               warm[[nm]] <- if (is.matrix(tmpl)) matrix(v, nrow(tmpl), ncol(tmpl)) else as.array(v)
@@ -1745,22 +2096,73 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
           if (!length(warm)) warm <- NULL
         }
       }
-      res <- run_one_fit(stan_data, warm = warm)
+      # No per-step optimizer cap: a capped fit is not at its optimum, so Sbar from
+      # it is meaningless and the chain oscillates (lp_test 2026-09-04). Every step
+      # runs the optimizer to its own stopping rule.
+      res <- run_one_fit(stan_data, warm = warm, inner_iter = iq_em_inner_iter)
+      warm_status <- if (is.null(warm)) "start" else "moved"
+      if (!is.null(warm)) {
+        # Stall guard: a warm-started L-BFGS that fails its first line search returns
+        # the start unchanged (the solution sits on kinks of the fused penalty).
+        # Detect it by comparing the returned unbounded coefficients with the start
+        # and retry from the same start with a small jitter.
+        same_as <- function(r0, w0) {
+          pv <- .bqq_par_as_vector(r0$map$par); if (!is.numeric(pv)) return(FALSE)
+          dmax <- 0
+          for (nm in intersect(names(w0), c("beta0", "betaX", "gamma"))) {
+            if (length(w0[[nm]]) == 0L) next
+            idx <- which(startsWith(names(pv), paste0(nm, "[")))
+            if (length(idx) == length(w0[[nm]])) dmax <- max(dmax, max(abs(unname(pv[idx]) - as.vector(w0[[nm]]))))
+          }
+          dmax < 1e-8
+        }
+        if (same_as(res, warm)) {
+          warm_status <- "stalled"
+          for (k in seq_along(iq_em_warm_jitter)) {
+            wj <- warm
+            for (nm in intersect(names(wj), c("beta0", "betaX", "gamma"))) {
+              if (length(wj[[nm]]) == 0L) next
+              wj[[nm]] <- wj[[nm]] + stats::rnorm(length(wj[[nm]]), 0, iq_em_warm_jitter[k])
+            }
+            res_j <- run_one_fit(stan_data, warm = wj, inner_iter = iq_em_inner_iter)
+            if (!same_as(res_j, wj)) { res <- res_j; warm_status <- paste0("jitter", k); break }
+          }
+          if (verbose && warm_status == "stalled")
+            message(sprintf("[iq-EM %02d] warm start stalled after %d jittered retries; keeping the previous solution", s, length(iq_em_warm_jitter)))
+        }
+      }
       lam_used <- cur
 
       draws <- .bqq_iq_draws(res)
-      Sbar <- if (is.null(draws)) NA_real_ else
-        .bqq_iq_Sbar(draws, w_iq_gamma, w_iq_beta, r, p_slope, m)
+      Sbar_draws  <- if (is.null(draws)) NA_real_ else .bqq_iq_Sbar(draws, w_iq_gamma, w_iq_beta, r, p_slope, m)
+      Sbar_closed <- .bqq_iq_Sbar_closed(res$laplace_samples, w_iq_gamma, w_iq_beta, r, p_slope, m)
+      Sbar <- if (iq_em_estep == "closed" && is.finite(Sbar_closed)) Sbar_closed else Sbar_draws
       nxt <- .bqq_iq_em_step(cur, Sbar, n_iq_diff, step = iq_em_mode)
       rel <- if (is.finite(nxt)) abs(nxt - cur) / max(cur, .Machine$double.eps) else NA_real_
 
+      # Monitor (author's ruling 2026-09-04): exactly Eq. (17), recomputed in R
+      # from the returned coefficients at this step's lambda; and its gain over
+      # the previous step of the chain. Nothing else is compared.
+      lp17_obj <- tryCatch(.bqq_lp17(res$map$par_vec, stan_data), error = function(e) NULL)
+      lp17 <- if (!is.null(lp17_obj) && is.finite(lp17_obj$total)) lp17_obj$total else NA_real_
+      lp17_gain <- if (!is.null(tr) && is.finite(lp17) && is.finite(tr$lp17[nrow(tr)])) lp17 - tr$lp17[nrow(tr)] else NA_real_
+      # Complete-data log posterior (author's ruling 2026-09-04, late): the EM's objective
+      # is Eq. (17) plus the normalizing term N log lambda_iq of the fused prior
+      # (Appendix C, Eq. C.1), constant within a fit, decisive across EM steps. Its gain
+      # vanishes at the EM fixed point (-P + N/lambda = 0 with P = Sbar); this is the
+      # stopping rule. Eq. (17) alone is kept in the trace for reference.
+      lp_cd <- if (is.finite(lp17)) lp17 + n_iq_diff * log(sqrt(lam_used)) else NA_real_
+      lp_cd_gain <- if (!is.null(tr) && is.finite(lp_cd) && is.finite(tr$lp_cd[nrow(tr)])) lp_cd - tr$lp_cd[nrow(tr)] else NA_real_
       tr <- rbind(tr, data.frame(
         iter = s, step = iq_em_mode, lambda_iq2 = lam_used, lambda_iq = sqrt(lam_used),
-        Sbar = Sbar, lambda_iq2_next = nxt, rel_change = rel
+        Sbar = Sbar, Sbar_draws = Sbar_draws, Sbar_closed = Sbar_closed,
+        lambda_iq2_next = nxt, rel_change = rel, warm_status = warm_status,
+        lp17 = lp17, lp17_gain = lp17_gain, lp_cd = lp_cd, lp_cd_gain = lp_cd_gain
       ))
       if (verbose) {
-        message(sprintf("[iq-EM %02d] lambda_iq2 = %.6g  (lambda = %.6g)  Sbar = %.6g  -> %.6g",
-                        s, lam_used, sqrt(lam_used), Sbar, nxt))
+        message(sprintf("[iq-EM %02d] lambda_iq2 = %.6g  (lambda = %.6g)  Sbar = %.6g (closed %.6g, draws %.6g)  -> %.6g  | lp_cd = %.6g  gain = %s  (lp17 = %.6g)",
+                        s, lam_used, sqrt(lam_used), Sbar, Sbar_closed, Sbar_draws, nxt, lp_cd,
+                        if (is.finite(lp_cd_gain)) sprintf("%+.6g", lp_cd_gain) else "-", lp17))
       }
 
       if (!is.finite(nxt)) {
@@ -1768,6 +2170,14 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
         iq_em$note <- sprintf(
           "EM halted at iteration %d: Sbar = %s produced no usable update; keeping lambda_iq2 = %.6g.",
           s, format(Sbar), lam_used)
+        break
+      }
+      # Primary stop: the complete-data log posterior lp_cd has stopped gaining along
+      # the chain (relative change below iq_em_lp_tol, default 1e-2, guarded by
+      # max(1, |lp_cd|)). The lambda tolerance below is secondary.
+      if (is.finite(lp_cd_gain) && abs(lp_cd_gain) < iq_em_lp_tol * max(1, abs(tr$lp_cd[nrow(tr)] - lp_cd_gain))) {
+        converged <- TRUE
+        stop_reason <- "lp_gain"
         break
       }
       if (is.finite(rel) && rel < iq_em_tol) {
@@ -1836,11 +2246,14 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
 
     if (!converged && is.null(iq_em$note)) {
       iq_em$note <- sprintf(
-        paste0("EM did not meet iq_em_tol = %g within iq_em_max_iter = %d (last relative change ",
-               "%.3g). Reported lambda_iq2 is the last fitted value. If the trace is oscillating ",
-               "rather than drifting, this is E-step Monte-Carlo noise: raise laplace_n_samples ",
-               "(currently %d) or iq_em_mc_tol."),
-        iq_em_tol, iq_em_max_iter, tr$rel_change[nrow(tr)], laplace_n_samples)
+        paste0("EM stopped at iq_em_max_iter = %d without meeting either stopping rule: ",
+               "relative gain in the complete-data log posterior < iq_em_lp_tol = %g (last gain %s) or relative change in ",
+               "lambda_iq2 < iq_em_tol = %g (last %.3g). Reported lambda_iq2 is the last fitted ",
+               "value. If the trace is oscillating rather than drifting, this is E-step ",
+               "Monte-Carlo noise: raise laplace_n_samples (currently %d) or iq_em_mc_tol."),
+        iq_em_max_iter, iq_em_lp_tol,
+        if (is.finite(tr$lp_cd_gain[nrow(tr)])) sprintf("%.3g", tr$lp_cd_gain[nrow(tr)]) else "NA",
+        iq_em_tol, tr$rel_change[nrow(tr)], laplace_n_samples)
       warning(iq_em$note, call. = FALSE)
     }
 

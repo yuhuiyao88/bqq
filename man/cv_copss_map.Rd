@@ -16,9 +16,9 @@ cv_copss_map(
   map_iter = 2000,
   lambda_iq2 = NULL,
   adaptive_iq = TRUE,
-  iq_em_max_iter = 5,
+  iq_em_max_iter = NULL,
   cv_laplace_n_samples = 2000,
-  iq_em_tol = 0.1,
+  iq_em_tol = NULL,
   iq_em_mc_tol = 0.02,
   loss = c("score", "pinball"),
   seed = 123,
@@ -50,7 +50,8 @@ or as the EM starting value when TRUE.}
 (default TRUE since 0.6.3, the same estimation procedure as the final fit).}
 
 \item{iq_em_max_iter, iq_em_tol, iq_em_mc_tol}{EM controls forwarded to
-\code{getModel}; see there.}
+\code{getModel}; \code{iq_em_max_iter} and \code{iq_em_tol} default to \code{getModel}'s
+own, so the tuning fits run the same chain to the same stopping rule as the final fit.}
 
 \item{cv_laplace_n_samples}{Laplace draws per CV fit when \code{adaptive_iq = TRUE}
 (default 2000); the E-step only averages \eqn{|d|} over them.
