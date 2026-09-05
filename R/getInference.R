@@ -486,7 +486,7 @@ getEta <- function(fit_result, H = NULL, X = NULL, offset = NULL, n_samples = 10
   # integrates the whole interval and no truncation correction is applied.
   #
   # Q is not observed off the grid, so it is taken to be the SAME surrogate the
-  # 'maxent' basis uses (see .bqq_maxent_weights and MONITORING_BASES_math.md):
+  # piecewise-uniform-density surrogate (see MONITORING_BASES_math.md):
   # piecewise-uniform density between knots -- hence Q piecewise LINEAR in u --
   # with continuity-matched exponential tails, giving
   #     Q(u) = q_1 + s_1 log(u/tau_1)                  for u < tau_1,
@@ -534,72 +534,6 @@ getEta <- function(fit_result, H = NULL, X = NULL, offset = NULL, n_samples = 10
          "); the full-interval integration is not closing.", call. = FALSE)
 
   dimnames(W) <- list(c("L-location", "L-scale", "L-skewness", "L-kurtosis"),
-                      format(taus))
-  W
-}
-
-# Maximum entropy: given Q at the fitted levels, the maxent density subject to
-# those CDF constraints is piecewise uniform between knots with EXPONENTIAL tails
-# whose rate is pinned by continuity at the outer knots (mass tau_1 and 1-tau_m).
-# Each contrast is the GRADIENT of a moment functional w.r.t. the quantiles
-# (delta method), so the invariances are INHERITED rather than imposed:
-# standardized skewness and kurtosis are location- and scale-invariant by
-# definition, hence w'1 = 0 and w'z = 0 automatically -- checked below.
-.bqq_me_raw_moment <- function(q, r, taus) {
-  m <- length(taus); p_int <- diff(taus); tot <- 0
-  for (k in seq_len(m - 1L)) {
-    a <- q[k]; b <- q[k + 1L]
-    tot <- tot + p_int[k] * (b^(r + 1) - a^(r + 1)) / ((r + 1) * (b - a))
-  }
-  p1 <- taus[1];     f1 <- p_int[1]       / (q[2] - q[1]);      s1 <- p1 / f1
-  p5 <- 1 - taus[m]; f5 <- p_int[m - 1L]  / (q[m] - q[m - 1L]); s5 <- p5 / f5
-  for (j in 0:r) {
-    tot <- tot + p1 * choose(r, j) * q[1]^(r - j) * (-1)^j * factorial(j) * s1^j
-    tot <- tot + p5 * choose(r, j) * q[m]^(r - j) *          factorial(j) * s5^j
-  }
-  tot
-}
-.bqq_me_moments <- function(q, taus) {
-  M   <- vapply(1:4, function(r) .bqq_me_raw_moment(q, r, taus), 0)
-  m1  <- M[1]
-  mu2 <- M[2] - m1^2
-  mu3 <- M[3] - 3 * m1 * M[2] + 2 * m1^3
-  mu4 <- M[4] - 4 * m1 * M[3] + 6 * m1^2 * M[2] - 3 * m1^4
-  c(m1, sqrt(mu2), mu3 / mu2^1.5, mu4 / mu2^2)
-}
-.bqq_maxent_weights <- function(taus, base = stats::qnorm(taus)) {
-  m <- length(taus)
-  if (m < 4L) stop("the 'maxent' basis needs at least 4 quantile levels", call. = FALSE)
-  h <- 1e-5
-  # Domain condition. The interior densities (tau_{k+1}-tau_k)/(q_{k+1}-q_k) and the
-  # tail scales are defined only for a STRICTLY increasing baseline; crossing or tied
-  # quantiles divide by zero or yield a negative density. The central difference below
-  # perturbs one knot by +/- h, so a gap narrower than 2h can break monotonicity even
-  # when the baseline itself is admissible -- check against that, not merely against 0.
-  if (any(!is.finite(base)) || any(!is.finite(taus)))
-    stop("the 'maxent' basis needs finite taus and baseline quantiles", call. = FALSE)
-  if (is.unsorted(taus, strictly = TRUE) || taus[1] <= 0 || taus[m] >= 1)
-    stop("the 'maxent' basis needs strictly increasing taus in (0, 1)", call. = FALSE)
-  gap <- diff(base)
-  if (any(gap <= 2 * h))
-    stop("the 'maxent' basis needs a strictly increasing baseline with gaps wider than ",
-         2 * h, "; smallest gap is ", format(min(gap)),
-         ". Crossing, tied or near-tied quantiles leave the surrogate density undefined.",
-         call. = FALSE)
-  W <- vapply(seq_along(taus), function(k) {
-    qp <- base; qm <- base; qp[k] <- qp[k] + h; qm[k] <- qm[k] - h
-    (.bqq_me_moments(qp, taus) - .bqq_me_moments(qm, taus)) / (2 * h)
-  }, numeric(4))
-  # The two invariances are inherited from the moment definitions; if they ever
-  # stop holding the contrast is no longer a shape contrast, so fail loudly.
-  zb <- stats::qnorm(taus)
-  bad <- max(abs(sum(W[3, ])), abs(sum(W[3, ] * zb)),
-             abs(sum(W[4, ])), abs(sum(W[4, ] * zb)))
-  if (!is.finite(bad) || bad > 1e-5)
-    stop("maxent weights lost location/scale invariance (max violation ",
-         format(bad), "); refusing to return a contrast that is not shape-only.",
-         call. = FALSE)
-  dimnames(W) <- list(c("ME-location", "ME-scale", "ME-skewness", "ME-kurtosis"),
                       format(taus))
   W
 }
@@ -770,12 +704,12 @@ getEta <- function(fit_result, H = NULL, X = NULL, offset = NULL, n_samples = 10
 #' @param alpha Significance level for all cell and block decisions (two-sided);
 #'   this is the nominal false alarm probability FAP0 of the manuscript.
 #' @param basis Character vector selecting which test family/families to compute:
-#'   \code{"quantile"} (the raw quantile block-gammas), \code{"qss"}, \code{"lmom"},
-#'   or \code{"maxent"}. Default is \code{c("quantile", "qss")}; \code{"both"} is
-#'   accepted for those two and \code{"all"} selects all four.
+#'   \code{"quantile"} (the raw quantile block-gammas), \code{"qss"} and \code{"lmom"}.
+#'   Default: all three, as Section 3 of the manuscript presents them; \code{"both"} is
+#'   accepted for quantile + qss and \code{"all"} for the three.
 #'
-#'   The last three are all the quantile family rotated into an interpretable,
-#'   moment-aligned basis, and all three use the same four cells and the identical
+#'   The last two are the quantile family rotated into an interpretable,
+#'   moment-aligned basis, and both use the same four cells and the identical
 #'   downstream machinery (whitening, UI / Hotelling T-squared, the
 #'   raw/Holm/Bonferroni/BH/calibrated family, cell localization). Only the 4 x m
 #'   contrast matrix differs, so any difference between them is attributable to the
@@ -786,8 +720,8 @@ getEta <- function(fit_result, H = NULL, X = NULL, offset = NULL, n_samples = 10
 #'     \item \code{"lmom"} -- shifted-Legendre L-moment contrasts,
 #'       \eqn{\lambda_{r+1} = \int_0^1 Q(u) P^*_r(u) du}, evaluated over the
 #'       \strong{whole} unit interval as the definition requires. \eqn{Q} is not
-#'       observed off the fitted grid, so it is taken to be the same surrogate the
-#'       \code{"maxent"} basis uses (piecewise-uniform density between knots, hence
+#'       observed off the fitted grid, so it is taken to be a piecewise-uniform
+#'       density between knots (hence
 #'       \eqn{Q} piecewise linear, with continuity-matched exponential tails). Every
 #'       integral is then closed form, and because the tail scales are linear in the
 #'       quantiles the weights depend on \code{taus} alone -- this basis needs no
@@ -796,12 +730,6 @@ getEta <- function(fit_result, H = NULL, X = NULL, offset = NULL, n_samples = 10
 #'       is applied; the builder errors rather than patching if it ever fails.
 #'       These are the exact L-moments \emph{of that surrogate}, not of the unknown
 #'       underlying quantile function.
-#'     \item \code{"maxent"} -- gradients of the mean / sd / standardized skewness /
-#'       standardized kurtosis of the maximum-entropy density consistent with the
-#'       fitted quantiles (piecewise uniform between knots, exponential tails pinned
-#'       by continuity). Location and scale invariance are \emph{inherited} from the
-#'       standardized moment definitions rather than imposed, and are verified
-#'       numerically; the weights are evaluated at a standard normal baseline.
 #'   }
 #'   Requires at least four quantile levels (\code{"qss"} requires the five-level
 #'   grid); a family that cannot be formed is skipped with a warning.
@@ -840,9 +768,9 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
                                      signal_position = c("first", "last", "middle", "max_deviation", "pinball", "score"),
                                      y = NULL, eta = NULL,
                                      laplace_n_samples = 1000, alpha = 0.05,
-                                     basis = c("quantile", "qss"),
+                                     basis = c("quantile", "qss", "lmom"),
                                      statistic = c("ui", "hotelling_t2"),
-                                     adjust = c("calib", "raw", "holm", "bonf", "bh"),
+                                     adjust = c("raw", "calib", "holm", "bonf", "bh"),
                                      seed = NULL) {
 
   # Validate arguments. `adjust` is the across-block decision rule of record:
@@ -862,8 +790,8 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
   # caller passes them explicitly (backward compatibility).
   if (length(basis) == 1L && identical(basis, "both")) basis <- c("quantile", "qss")
   if (length(basis) == 1L && identical(basis, "all"))
-    basis <- c("quantile", "qss", "lmom", "maxent")
-  basis     <- match.arg(basis, c("quantile", "qss", "lmom", "maxent"),
+    basis <- c("quantile", "qss", "lmom")
+  basis     <- match.arg(basis, c("quantile", "qss", "lmom"),
                          several.ok = TRUE)
   statistic <- if (missing(statistic)) "ui" else statistic
   statistic[statistic == "cell_max"] <- "ui"          # backward-compat alias
@@ -881,9 +809,6 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
   do_lmom_fam   <- ("lmom"   %in% basis)
   do_lmom_ui    <- do_lmom_fam && want_ui
   do_lmom_t2    <- do_lmom_fam && want_t2
-  do_maxent_fam <- ("maxent" %in% basis)
-  do_maxent_ui  <- do_maxent_fam && want_ui
-  do_maxent_t2  <- do_maxent_fam && want_t2
 
   m <- length(taus)
 
@@ -992,7 +917,7 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
   # ---- alternative shape bases (same contrast form; only the rotation differs) ----
   # cell (c,j) -> (j-1)*4 + c, matching the QSS layout above, so .bqq_block_tests()
   # and every downstream consumer are reused verbatim.
-  lmom_res <- NULL; maxent_res <- NULL
+  lmom_res <- NULL
   build_shape_res <- function(W, do_ui, do_t2) {
     cvw <- matrix(NA_real_, n_iter, 4L * r)
     for (j in seq_len(r))
@@ -1007,14 +932,6 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
       lmom_res <- build_shape_res(.bqq_lmom_weights(taus), do_lmom_ui, do_lmom_t2)
     }
   }
-  if (do_maxent_fam) {
-    if (m < 4L) {
-      warning("the 'maxent' basis needs at least 4 quantile levels; skipping it.",
-              call. = FALSE)
-    } else {
-      maxent_res <- build_shape_res(.bqq_maxent_weights(taus), do_maxent_ui, do_maxent_t2)
-    }
-  }
 
   # nested, fully-symmetric results: tests[[basis]] has $z, $z_white, $cellstat,
   # $ui, $hotelling_t2 (each with stat/pvalue/adjp_*/sig_*), and $overall_{ui,t2}(_p).
@@ -1022,8 +939,7 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
             "overall_ui", "overall_ui_p", "overall_t2", "overall_t2_p")
   tests <- list(quantile = if (!is.null(q_res))      q_res[keep]      else NULL,
                 qss      = if (!is.null(qss_res))    qss_res[keep]    else NULL,
-                lmom     = if (!is.null(lmom_res))   lmom_res[keep]   else NULL,
-                maxent   = if (!is.null(maxent_res)) maxent_res[keep] else NULL)
+                lmom     = if (!is.null(lmom_res))   lmom_res[keep]   else NULL)
 
   # ---- flat aliases (NA / empty when a family or statistic is off) ----
   gu <- function(res, st, f, d) if (!is.null(res) && !is.null(res[[st]]) && !is.null(res[[st]][[f]])) res[[st]][[f]] else d
@@ -1058,9 +974,8 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
   # qss — cells
   z_qss    <- gz(qss_res, "z", NULL); z_white_qss <- gz(qss_res, "z_white", NULL); cellstat_qss <- gz(qss_res, "cellstat", NULL)
   # flat aliases for the alternative shape bases, mirroring the QSS ones so the
-  # plotting layer can treat all four families identically
+  # plotting layer can treat all three families identically
   z_lmom   <- gz(lmom_res,   "z", NULL); z_white_lmom   <- gz(lmom_res,   "z_white", NULL)
-  z_maxent <- gz(maxent_res, "z", NULL); z_white_maxent <- gz(maxent_res, "z_white", NULL)
   qss_stat <- if (!is.null(z_qss)) max(abs(z_qss)) else NA_real_   # raw studentized global max
   # qss — UI
   ui_block_qss          <- gu(qss_res, "ui", "stat", NAr)
@@ -1295,7 +1210,6 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
     # ---- qss basis (flat aliases) ----
     z_qss = z_qss, z_white_qss = z_white_qss, cellstat_qss = cellstat_qss, qss_stat = qss_stat,
     z_lmom = z_lmom, z_white_lmom = z_white_lmom,
-    z_maxent = z_maxent, z_white_maxent = z_white_maxent,
     ui_block_qss = ui_block_qss, pvalue_qss = pvalue_qss,
     adjp_qss_holm = adjp_qss_holm, adjp_qss_bonf = adjp_qss_bonf, adjp_qss_bh = adjp_qss_bh, c_qss = c_qss,
     significant_qss_raw = significant_qss_raw, significant_qss_holm = significant_qss_holm,

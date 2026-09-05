@@ -14,9 +14,6 @@ cv_copss_grid(
   base_args = list(),
   loss = c("score", "pinball"),
   seed = 123,
-  warm_start_iq = FALSE,
-  cv_iq_em_tol = NULL,
-  cv_iq_em_max_iter = NULL,
   verbose = TRUE
 )
 }
@@ -41,29 +38,11 @@ are always computed and returned; \code{loss} decides which one fills
 
 \item{seed}{Random seed.}
 
-\item{warm_start_iq}{Logical (default FALSE). If TRUE, each grid row starts its EM
-at the \eqn{\lambda_{iq}^2} the previous row converged to and each fold's
-optimizer at that fold's previous-row MAP. OFF by default since 0.6.4: the
-spike-and-slab posterior is multimodal, and a fit started at a neighbouring
-row's solution stays in that row's mode (verified on the ARCOS series at
-l = 182: rows became identical to seven digits and the tuning could no longer
-separate the spike sd). Every tuning fit therefore starts from the pilot, as
-the manuscript states; inside each fit the EM is one chain across its
-iterations (see \code{getModel}).}
-
-\item{cv_iq_em_tol, cv_iq_em_max_iter}{EM controls of the tuning fits. \code{NULL}
-(default): the tuning fits use \code{getModel}'s own \code{iq_em_tol} and
-\code{iq_em_max_iter}, so every fit runs the same chain -- inner optimization to
-convergence, one EM update, repeat -- to the same stopping rule (the relative gain
-of the complete-data log posterior, \code{iq_em_lp_tol}). Supply values only to
-override; an \code{iq_em_tol} or \code{iq_em_max_iter} in \code{base_args} or the
-grid overrides either.}
-
 \item{verbose}{Print progress.}
 }
 \value{
-data.frame with grid and CV losses (see \code{cv_copss_map} for the
-  loss columns), plus \code{lambda_iq2_fit}, the mean over folds of the
+data.frame with grid and CV losses (\code{train_loss}, \code{val_loss},
+  \code{train_score}, \code{val_score}, \code{train_pinball}, \code{val_pinball}), plus \code{lambda_iq2_fit}, the mean over folds of the
   \eqn{\lambda_{iq}^2} each row's EM settled on (NA when the EM is off), which a
   caller can pass as the start of the final fit.
 }

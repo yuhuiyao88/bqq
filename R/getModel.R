@@ -113,20 +113,9 @@
 }
 
 # One update of lambda_iq2 (manuscript Appendix C).
-#   "recursion"  : the M-step recursion, Eq. (C.8),
-#                    lambda2_{s+1} = 2 N lambda2_s / (lambda_s Sbar + N).
-#   "fixedpoint" : its fixed point, Eq. (C.9): lambda2 = (N / Sbar)^2. The default
-#                  from 0.5.2 to 0.6.2.
-#   "hybrid"     : DEFAULT since 0.6.3. Fixed point until the update reverses direction
-#                  by a relative move >= iq_em_switch_tol, then the recursion (getModel
-#                  loop). Fast where the jump converges, stable where it would cycle.
-# Both have the same fixed point. With eta = dlogSbar/dlogLambda at the fixed
-# point, the recursion's derivative in lambda2 is 1 - (1+eta)/4 (converges for
-# -1 < eta < 7) and the fixed-point jump's is -eta (converges only for |eta| < 1).
-# When Sbar hardly depends on lambda (many blocks) the jump wins on iterations
-# (1 versus ~44); with few blocks Sbar switches between a fused and an unfused
-# solution, eta exceeds 1, and the jump cycles (ARCOS, r = 5 and 10, 2026-09-02).
-# The outer loop recomputes Sbar from a fit at the updated lambda each iteration.
+#   "recursion"  : the M-step recursion, Eq. (C.8), same fixed point, partial moves.
+#   "fixedpoint" : DEFAULT since 0.6.6 -- Eq. (C.9), the maximizer of the expected
+#                  complete-data log posterior over lambda. No other update is offered.
 .bqq_iq_em_step <- function(lambda_iq2, Sbar, N, step = c("fixedpoint", "recursion")) {
   step <- match.arg(step)
   if (!is.finite(Sbar) || !is.finite(lambda_iq2) || N <= 0) return(NA_real_)
@@ -479,8 +468,6 @@
 #'   \code{adaptive_iq = TRUE} (default 60). Each iteration recomputes \eqn{\bar S}
 #'   from a fit at the updated \eqn{\lambda}. The fixed-point update usually needs a
 #'   handful of iterations; after a switch to the recursion, allow several dozen.
-#' @param iq_em_tol Relative-change tolerance on \eqn{\lambda_{iq}^2} for declaring EM
-#'   convergence (default 1e-2 since 0.6.3; was 1e-3).
 #' @param iq_smooth Smoothing constant of the absolute value in the interquantile
 #'   penalty inside the optimizer: |d| is replaced by sqrt(d^2 + iq_smooth^2) so that
 #'   the objective is differentiable at fused solutions and warm restarts move
@@ -508,24 +495,15 @@
 #'   Eq. C.1), recomputed exactly at the step's solution (trace columns \code{lp_cd},
 #'   \code{lp_cd_gain}; Eq. 17 alone in \code{lp17}) -- is below this fraction of the
 #'   previous value's magnitude (floored at 1). Default 1e-2, the classic loose EM
-#'   criterion and the same 1\% used for \code{iq_em_tol}. The term is constant within a
+#'   criterion. The term is constant within a
 #'   fit, so the inner optimization is unchanged, and it is a constant when
-#'   \code{adaptive_iq = FALSE}. \code{iq_em_tol} remains a secondary stop.
-#' @param iq_em_step How \eqn{\lambda_{iq}^2} is updated at each iteration.
-#'   \code{"fixedpoint"} (the behaviour from 0.5.2 to 0.6.2, Eq. (C.9) of the
-#'   manuscript) jumps to the fixed point \eqn{(N/\bar S)^2} of the M-step recursion at
-#'   every iteration; it needs few iterations when \eqn{\bar S} hardly depends on
-#'   \eqn{\lambda} but cycles between a fused and an unfused solution when it does
-#'   (few blocks). \code{"recursion"} (Eq. (C.8)) iterates the M-step recursion
-#'   \eqn{\lambda^2_{s+1} = 2N\lambda^2_s/(\lambda_s \bar S + N)}, which moves only part
-#'   of the way per iteration and does not cycle, but needs many iterations.
-#'   \code{"hybrid"} (default since 0.6.3) starts with \code{"fixedpoint"} and switches
-#'   to \code{"recursion"} for the remaining iterations the first time the update
-#'   reverses direction by a relative change of at least \code{iq_em_switch_tol};
-#'   \code{iq_em$switched_at} records the iteration.
-#'   Default \code{"fixedpoint"} (Appendix C, Eq. C.9): with the warm chain and the
-#'   Eq. (17) stopping rule no reversal was observed on ARCOS l = 182 or l = 365
-#'   (2026-09-04), so the hybrid switch is no longer needed; it is kept as an option.
+#'   \code{adaptive_iq = FALSE}. The only other exits are a non-finite update and
+#'   \code{iq_em_max_iter}.
+#' @param iq_em_step How \eqn{\lambda_{iq}^2} is updated at each EM iteration:
+#'   \code{"fixedpoint"} (default), the fixed point of the M-step, Appendix C Eq. (C.9),
+#'   which the maximization of the expected complete-data log posterior gives directly;
+#'   \code{"recursion"}, the augmented-model recursion Eq. (C.8), which has the same
+#'   fixed point and moves part of the way per iteration.
 #' @param iq_em_warm_jitter The estimation is one chain: the optimizer starts at the
 #'   pilot initialization of Section 2.4 once, and every EM iteration after the first
 #'   starts the MAP optimization at the previous iteration's full solution
@@ -536,20 +514,6 @@
 #'   tried in order. The trace column \code{warm_status} records "start" (first
 #'   iteration), "moved", "jitter<k>" or "stalled". The chain applies to
 #'   \code{fit_method = "map"} and to the MAP stage of \code{"map_mcmc"}.
-#' @param iq_em_switch_tol Relative change that counts as an oscillation for the
-#'   \code{"hybrid"} switch (default 0.5). Reversals smaller than this are left to
-#'   the Monte-Carlo floor rule of \code{iq_em_mc_tol}.
-#' @param iq_em_mc_tol Monte-Carlo noise-floor tolerance (default 0.02). The E-step
-#'   estimates \eqn{\bar S} from a finite set of Laplace draws, so
-#'   \eqn{\lambda_{iq}^2} cannot settle more tightly than the sampling noise in
-#'   \eqn{\bar S}: past that point successive updates simply bounce up and down about
-#'   the fixed point instead of shrinking. When the update has changed direction on
-#'   two consecutive iterations and every relative move involved is below
-#'   \code{iq_em_mc_tol}, the recursion is declared converged \emph{at the Monte-Carlo
-#'   floor} and stops, rather than burning the remaining refits chasing a tolerance
-#'   the E-step cannot deliver. This is recorded in \code{iq_em$note} and
-#'   \code{iq_em$stop_reason}. Tighten the floor by raising
-#'   \code{laplace_n_samples}, not by lowering \code{iq_em_tol}. Set to 0 to disable.
 
 #' @param adaptive_beta Logical; if TRUE (default), the beta-side shrinkage level
 #'   \eqn{\lambda_\beta^2} is learned from data for LASSO-type priors. If FALSE,
@@ -730,10 +694,7 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
                         lambda_iq2 = NULL,
                         adaptive_iq = TRUE,
                         iq_em_max_iter = 60,
-                        iq_em_tol = 1e-2,
-                        iq_em_mc_tol = 0.02,
-                        iq_em_step = c("fixedpoint", "hybrid", "recursion"),
-                        iq_em_switch_tol = 0.5,
+                        iq_em_step = c("fixedpoint", "recursion"),
                         adaptive_beta = TRUE,
                         lambda_beta2_a = 1, lambda_beta2_b = 0.05,
                         lambda_beta2_fixed = 1,
@@ -2033,11 +1994,10 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
   # ------------------------------------------------------------------
   n_iq_diff <- .bqq_iq_n_diff(r, p_slope, m)
   iq_em_step <- match.arg(iq_em_step)
-  iq_em_mode <- if (iq_em_step == "hybrid") "fixedpoint" else iq_em_step
+  iq_em_mode <- iq_em_step
   iq_em <- list(
     adaptive        = isTRUE(adaptive_iq),
     update          = iq_em_step,
-    switched_at     = NA_integer_,
     n_diff          = n_iq_diff,
     lp_tol          = iq_em_lp_tol,
     lambda_iq2      = lambda_iq2,
@@ -2058,11 +2018,6 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
     converged <- FALSE
     tr <- NULL
     res <- NULL
-    # Monte-Carlo floor detection: once the E-step noise dominates, the updates
-    # alternate direction about the fixed point instead of shrinking.
-    prev_sign <- NA_integer_
-    flips <- 0L
-    recent_rel <- numeric(0)
     stop_reason <- "max_iter"
 
     for (s in seq_len(iq_em_max_iter)) {
@@ -2172,57 +2127,13 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
           s, format(Sbar), lam_used)
         break
       }
-      # Primary stop: the complete-data log posterior lp_cd has stopped gaining along
-      # the chain (relative change below iq_em_lp_tol, default 1e-2, guarded by
-      # max(1, |lp_cd|)). The lambda tolerance below is secondary.
+      # The only convergence rule (author's ruling 2026-09-04/05): the complete-data log
+      # posterior lp_cd has stopped gaining along the chain -- relative change below
+      # iq_em_lp_tol (default 1e-2), guarded by max(1, |lp_cd|). The other exits are a
+      # non-finite update (above) and iq_em_max_iter.
       if (is.finite(lp_cd_gain) && abs(lp_cd_gain) < iq_em_lp_tol * max(1, abs(tr$lp_cd[nrow(tr)] - lp_cd_gain))) {
         converged <- TRUE
         stop_reason <- "lp_gain"
-        break
-      }
-      if (is.finite(rel) && rel < iq_em_tol) {
-        converged <- TRUE
-        stop_reason <- "tol"
-        break
-      }
-
-      # Monte-Carlo floor: direction reversals with only small moves mean the
-      # E-step noise, not the recursion, is now driving lambda_iq2.
-      sgn <- sign(nxt - cur)
-      reversed <- !is.na(prev_sign) && sgn != 0L && sgn == -prev_sign
-      # Hybrid rule: the fixed-point update (C.9) is kept until it reverses direction
-      # by a large relative move, i.e. it has started to cycle between a fused and an
-      # unfused solution; from then on the recursion (C.8) is used, which moves only
-      # part of the way per iteration and settles.
-      if (iq_em_step == "hybrid" && iq_em_mode == "fixedpoint" && reversed &&
-          is.finite(rel) && rel >= iq_em_switch_tol) {
-        iq_em_mode <- "recursion"
-        iq_em$switched_at <- s
-        nxt <- .bqq_iq_em_step(cur, Sbar, n_iq_diff, step = "recursion")
-        rel <- abs(nxt - cur) / max(cur, .Machine$double.eps)
-        tr$step[nrow(tr)] <- "fixedpoint->recursion"
-        tr$lambda_iq2_next[nrow(tr)] <- nxt; tr$rel_change[nrow(tr)] <- rel
-        sgn <- sign(nxt - cur)
-        if (verbose) message(sprintf("[iq-EM %02d] oscillation (relative move %.3g): switching to the recursion", s, tr$rel_change[nrow(tr)]))
-        flips <- 0L; prev_sign <- NA_integer_; recent_rel <- numeric(0)
-        cur <- nxt
-        next
-      }
-      if (reversed) flips <- flips + 1L
-      else if (sgn != 0L) flips <- 0L
-      if (sgn != 0L) prev_sign <- sgn
-      recent_rel <- c(recent_rel, rel)
-      if (length(recent_rel) > 3L) recent_rel <- recent_rel[-1L]
-      if (iq_em_mc_tol > 0 && flips >= 2L && length(recent_rel) >= 3L &&
-          all(is.finite(recent_rel)) && max(recent_rel) < iq_em_mc_tol) {
-        converged <- TRUE
-        stop_reason <- "mc_floor"
-        iq_em$note <- sprintf(
-          paste0("Stopped at the Monte-Carlo floor after %d iterations: lambda_iq2 is oscillating ",
-                 "about its fixed point by at most %.2g (relative), which is E-step sampling noise ",
-                 "from laplace_n_samples = %d, not a failure to converge. iq_em_tol = %g is below ",
-                 "that floor and cannot be met. Raise laplace_n_samples to tighten it."),
-          s, max(recent_rel), laplace_n_samples, iq_em_tol)
         break
       }
       cur <- nxt
@@ -2246,14 +2157,11 @@ getModel <- function(y, taus, H = NULL, X = NULL, offset = NULL, w = 0,
 
     if (!converged && is.null(iq_em$note)) {
       iq_em$note <- sprintf(
-        paste0("EM stopped at iq_em_max_iter = %d without meeting either stopping rule: ",
-               "relative gain in the complete-data log posterior < iq_em_lp_tol = %g (last gain %s) or relative change in ",
-               "lambda_iq2 < iq_em_tol = %g (last %.3g). Reported lambda_iq2 is the last fitted ",
-               "value. If the trace is oscillating rather than drifting, this is E-step ",
-               "Monte-Carlo noise: raise laplace_n_samples (currently %d) or iq_em_mc_tol."),
+        paste0("EM stopped at iq_em_max_iter = %d before the relative gain in the complete-data ",
+               "log posterior fell below iq_em_lp_tol = %g (last gain %s). Reported lambda_iq2 is ",
+               "the last fitted value."),
         iq_em_max_iter, iq_em_lp_tol,
-        if (is.finite(tr$lp_cd_gain[nrow(tr)])) sprintf("%.3g", tr$lp_cd_gain[nrow(tr)]) else "NA",
-        iq_em_tol, tr$rel_change[nrow(tr)], laplace_n_samples)
+        if (is.finite(tr$lp_cd_gain[nrow(tr)])) sprintf("%.3g", tr$lp_cd_gain[nrow(tr)]) else "NA")
       warning(iq_em$note, call. = FALSE)
     }
 

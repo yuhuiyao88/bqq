@@ -22,10 +22,7 @@ getModel(
   lambda_iq2 = NULL,
   adaptive_iq = TRUE,
   iq_em_max_iter = 60,
-  iq_em_tol = 0.01,
-  iq_em_mc_tol = 0.02,
-  iq_em_step = c("fixedpoint", "hybrid", "recursion"),
-  iq_em_switch_tol = 0.5,
+  iq_em_step = c("fixedpoint", "recursion"),
   adaptive_beta = TRUE,
   lambda_beta2_a = 1,
   lambda_beta2_b = 0.05,
@@ -167,40 +164,11 @@ recursion and must be strictly positive (default 1).}
 from a fit at the updated \eqn{\lambda}. The fixed-point update usually needs a
 handful of iterations; after a switch to the recursion, allow several dozen.}
 
-\item{iq_em_tol}{Relative-change tolerance on \eqn{\lambda_{iq}^2} for declaring EM
-convergence (default 1e-2 since 0.6.3; was 1e-3).}
-
-\item{iq_em_mc_tol}{Monte-Carlo noise-floor tolerance (default 0.02). The E-step
-estimates \eqn{\bar S} from a finite set of Laplace draws, so
-\eqn{\lambda_{iq}^2} cannot settle more tightly than the sampling noise in
-\eqn{\bar S}: past that point successive updates simply bounce up and down about
-the fixed point instead of shrinking. When the update has changed direction on
-two consecutive iterations and every relative move involved is below
-\code{iq_em_mc_tol}, the recursion is declared converged \emph{at the Monte-Carlo
-floor} and stops, rather than burning the remaining refits chasing a tolerance
-the E-step cannot deliver. This is recorded in \code{iq_em$note} and
-\code{iq_em$stop_reason}. Tighten the floor by raising
-\code{laplace_n_samples}, not by lowering \code{iq_em_tol}. Set to 0 to disable.}
-
-\item{iq_em_step}{How \eqn{\lambda_{iq}^2} is updated at each iteration.
-\code{"fixedpoint"} (the behaviour from 0.5.2 to 0.6.2, Eq. (C.9) of the
-manuscript) jumps to the fixed point \eqn{(N/\bar S)^2} of the M-step recursion at
-every iteration; it needs few iterations when \eqn{\bar S} hardly depends on
-\eqn{\lambda} but cycles between a fused and an unfused solution when it does
-(few blocks). \code{"recursion"} (Eq. (C.8)) iterates the M-step recursion
-\eqn{\lambda^2_{s+1} = 2N\lambda^2_s/(\lambda_s \bar S + N)}, which moves only part
-of the way per iteration and does not cycle, but needs many iterations.
-\code{"hybrid"} (default since 0.6.3) starts with \code{"fixedpoint"} and switches
-to \code{"recursion"} for the remaining iterations the first time the update
-reverses direction by a relative change of at least \code{iq_em_switch_tol};
-\code{iq_em$switched_at} records the iteration.
-Default \code{"fixedpoint"} (Appendix C, Eq. C.9): with the warm chain and the
-Eq. (17) stopping rule no reversal was observed on ARCOS l = 182 or l = 365
-(2026-09-04), so the hybrid switch is no longer needed; it is kept as an option.}
-
-\item{iq_em_switch_tol}{Relative change that counts as an oscillation for the
-\code{"hybrid"} switch (default 0.5). Reversals smaller than this are left to
-the Monte-Carlo floor rule of \code{iq_em_mc_tol}.}
+\item{iq_em_step}{How \eqn{\lambda_{iq}^2} is updated at each EM iteration:
+\code{"fixedpoint"} (default), the fixed point of the M-step, Appendix C Eq. (C.9),
+which the maximization of the expected complete-data log posterior gives directly;
+\code{"recursion"}, the augmented-model recursion Eq. (C.8), which has the same
+fixed point and moves part of the way per iteration.}
 
 \item{adaptive_beta}{Logical; if TRUE (default), the beta-side shrinkage level
 \eqn{\lambda_\beta^2} is learned from data for LASSO-type priors. If FALSE,
@@ -364,9 +332,10 @@ normalizing term \eqn{r(m-1) \log \lambda_{iq}} of the fused prior (Appendix C,
 Eq. C.1), recomputed exactly at the step's solution (trace columns \code{lp_cd},
 \code{lp_cd_gain}; Eq. 17 alone in \code{lp17}) -- is below this fraction of the
 previous value's magnitude (floored at 1). Default 1e-2, the classic loose EM
-criterion and the same 1\% used for \code{iq_em_tol}. The term is constant within a
+criterion. The term is constant within a
 fit, so the inner optimization is unchanged, and it is a constant when
-\code{adaptive_iq = FALSE}. \code{iq_em_tol} remains a secondary stop.}
+\code{adaptive_iq = FALSE}. The only other exits are a non-finite update and
+\code{iq_em_max_iter}.}
 
 \item{iq_em_warm_jitter}{The estimation is one chain: the optimizer starts at the
 pilot initialization of Section 2.4 once, and every EM iteration after the first

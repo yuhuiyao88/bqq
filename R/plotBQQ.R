@@ -78,7 +78,7 @@
   }
   stat <- if (!is.null(detection$statistic)) detection$statistic else "ui"
   stat_name <- if (("hotelling_t2" %in% stat) && !("ui" %in% stat)) "hotelling_t2" else "ui"
-  adjust <- if (!is.null(detection$adjust)) detection$adjust else "calib"
+  adjust <- if (!is.null(detection$adjust)) detection$adjust else "raw"
 
   sb <- detection$tests[[fam]][[stat_name]][[adjust]]
   if (is.null(sb)) {                                      # older detection objects
@@ -395,7 +395,7 @@ plotGammaHeatmap <- function(fit, detection = NULL, block_labels = NULL,
   ## families (basis), which block statistic, and which across-block rule
   ## (adjust) were chosen when detectChangepoints_gamma() was run. The plot has
   ## no decision arguments of its own. ----
-  ALL_FAMS <- c("quantile", "qss", "lmom", "maxent")
+  ALL_FAMS <- c("quantile", "qss", "lmom")
   fams <- if (is.null(detection)) "quantile"
           else if (!is.null(detection$basis)) detection$basis
           else c("quantile", if (!is.null(detection$z_qss)) "qss")
@@ -405,14 +405,13 @@ plotGammaHeatmap <- function(fit, detection = NULL, block_labels = NULL,
     quantile = TRUE,
     qss      = !is.null(detection$z_qss),
     lmom     = !is.null(detection$z_lmom),
-    maxent   = !is.null(detection$z_maxent),
     FALSE)
   if (!is.null(detection)) fams <- fams[vapply(fams, have, logical(1))]
   if (length(fams) == 0) fams <- "quantile"
   stat <- if (!is.null(detection) && !is.null(detection$statistic)) detection$statistic else "ui"
   use_t2 <- ("hotelling_t2" %in% stat) && !("ui" %in% stat)   # UI wins if both were run
   stat_name <- if (use_t2) "hotelling_t2" else "ui"
-  adjust <- if (!is.null(detection) && !is.null(detection$adjust)) detection$adjust else "calib"
+  adjust <- if (!is.null(detection) && !is.null(detection$adjust)) detection$adjust else "raw"
 
   ## ---- OOC blocks under the recorded rule; older detection objects fall
   ## back to the flat calibrated aliases (calib only). ----
@@ -568,9 +567,6 @@ plotGammaHeatmap <- function(fit, detection = NULL, block_labels = NULL,
   shape_panel("lmom", detection$z_white_lmom, detection$z_lmom,
               c("L-location", "L-scale", "L-skewness", "L-kurtosis"),
               "L-moment Shift Coefficient")
-  shape_panel("maxent", detection$z_white_maxent, detection$z_maxent,
-              c("ME-location", "ME-scale", "ME-skewness", "ME-kurtosis"),
-              "Maximum-entropy Shift Coefficient")
 
   ## ---- return one panel, or stack them in the order requested ----
   panels <- panels[intersect(fams, names(panels))]

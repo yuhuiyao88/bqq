@@ -14,9 +14,9 @@ detectChangepoints_gamma(
   eta = NULL,
   laplace_n_samples = 1000,
   alpha = 0.05,
-  basis = c("quantile", "qss"),
+  basis = c("quantile", "qss", "lmom"),
   statistic = c("ui", "hotelling_t2"),
-  adjust = c("calib", "raw", "holm", "bonf", "bh"),
+  adjust = c("raw", "calib", "holm", "bonf", "bh"),
   seed = NULL
 )
 }
@@ -60,12 +60,12 @@ for backward compatibility when \code{fit_result$laplace_samples} is absent
 this is the nominal false alarm probability FAP0 of the manuscript.}
 
 \item{basis}{Character vector selecting which test family/families to compute:
-  \code{"quantile"} (the raw quantile block-gammas), \code{"qss"}, \code{"lmom"},
-  or \code{"maxent"}. Default is \code{c("quantile", "qss")}; \code{"both"} is
-  accepted for those two and \code{"all"} selects all four.
+  \code{"quantile"} (the raw quantile block-gammas), \code{"qss"} and \code{"lmom"}.
+  Default: all three, as Section 3 of the manuscript presents them; \code{"both"} is
+  accepted for quantile + qss and \code{"all"} for the three.
 
-  The last three are all the quantile family rotated into an interpretable,
-  moment-aligned basis, and all three use the same four cells and the identical
+  The last two are the quantile family rotated into an interpretable,
+  moment-aligned basis, and both use the same four cells and the identical
   downstream machinery (whitening, UI / Hotelling T-squared, the
   raw/Holm/Bonferroni/BH/calibrated family, cell localization). Only the 4 x m
   contrast matrix differs, so any difference between them is attributable to the
@@ -76,8 +76,8 @@ this is the nominal false alarm probability FAP0 of the manuscript.}
     \item \code{"lmom"} -- shifted-Legendre L-moment contrasts,
       \eqn{\lambda_{r+1} = \int_0^1 Q(u) P^*_r(u) du}, evaluated over the
       \strong{whole} unit interval as the definition requires. \eqn{Q} is not
-      observed off the fitted grid, so it is taken to be the same surrogate the
-      \code{"maxent"} basis uses (piecewise-uniform density between knots, hence
+      observed off the fitted grid, so it is taken to be a piecewise-uniform
+      density between knots (hence
       \eqn{Q} piecewise linear, with continuity-matched exponential tails). Every
       integral is then closed form, and because the tail scales are linear in the
       quantiles the weights depend on \code{taus} alone -- this basis needs no
@@ -86,12 +86,6 @@ this is the nominal false alarm probability FAP0 of the manuscript.}
       is applied; the builder errors rather than patching if it ever fails.
       These are the exact L-moments \emph{of that surrogate}, not of the unknown
       underlying quantile function.
-    \item \code{"maxent"} -- gradients of the mean / sd / standardized skewness /
-      standardized kurtosis of the maximum-entropy density consistent with the
-      fitted quantiles (piecewise uniform between knots, exponential tails pinned
-      by continuity). Location and scale invariance are \emph{inherited} from the
-      standardized moment definitions rather than imposed, and are verified
-      numerically; the weights are evaluated at a standard normal baseline.
   }
   Requires at least four quantile levels (\code{"qss"} requires the five-level
   grid); a family that cannot be formed is skipped with a warning.}

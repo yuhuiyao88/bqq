@@ -138,9 +138,7 @@ plotGammaHeatmap(fit, det)                       # blocks (grey) + cells (black)
 
 | Function | Description |
 |---|---|
-| `cv_copss_map()` | Order-preserved 2-fold CV (MAP fits) |
 | `cv_copss_grid()` | Grid-search CV over hyperparameters (MAP fits); extra `getModel` arguments pass through `base_args` |
-| `cv_copss_mcmc()` | Grid-search CV using MCMC fits |
 
 ### Visualization
 
@@ -201,6 +199,26 @@ the full across-block family — raw, Holm, Bonferroni, BH, and the **calibrated
 single-step rule using analytic charting constants (Šidák-type) that control the
 probability of any false alarm across all blocks and cells jointly.
 
+### 0.6.7
+
+- **Cross-validation has one function.** `cv_copss_map()` and `cv_copss_mcmc()` were
+  removed. `cv_copss_grid(y, taus, H, X, w, grid, base_args, loss, seed, verbose)` calls
+  `getModel()` directly with each grid row merged into `base_args`, so a CV fit is the
+  same chain (inner optimization to convergence, one EM update, repeat, stop on the
+  relative gain of the complete-data log posterior) as the final fit. Only the columns
+  of `grid` are tuned; the manuscript tunes `spike_sd` and `lambda_lasso2_b`.
+- **EM stopping rule.** The chain stops when the relative gain of the complete-data log
+  posterior (Eq. 17 of the manuscript plus `r (m - 1) log lambda_iq`) falls below
+  `iq_em_lp_tol` (default 1e-2). `iq_em_tol`, `iq_em_mc_tol`, `iq_em_switch_tol`,
+  `iq_em_warm` and the `"hybrid"` value of `iq_em_step` were removed;
+  `iq_em_step = c("fixedpoint", "recursion")` selects Appendix C (C.9) or (C.8).
+  `iq_em_estep = "closed"` (default) uses the folded-normal mean of |d| under the
+  Laplace approximation; `"draws"` uses posterior draws.
+- **Detection defaults.** `detectChangepoints_gamma(adjust = "raw")` is the default
+  decision rule; `basis` is `c("quantile", "qss", "lmom")` and all three are always
+  reported. The `"maxent"` basis was retired and `plotGammaHeatmap()` no longer draws
+  its panel.
+
 ### Wider spike defaults (0.5.2)
 
 - `getModel()`'s `spike_sd` and `beta_spike_sd` both default to **0.1**, raised from
@@ -223,25 +241,22 @@ probability of any false alarm across all blocks and cells jointly.
 
 ### Monitoring bases (0.5.1)
 
-- `detectChangepoints_gamma(basis = ...)` accepts **`"lmom"`** and **`"maxent"`** in
-  addition to `"quantile"` and `"qss"`; `"both"` selects the first two and `"all"`
-  selects all four. Results appear at `det$tests$lmom` / `det$tests$maxent`, with
-  flat aliases `z_white_lmom` / `z_white_maxent`, and `plotGammaHeatmap()` renders
-  one panel per basis. All four are 4-cell linear contrasts on the block gammas and
-  are scored by identical code, so any difference between them comes from the
-  weights alone.
+- `detectChangepoints_gamma(basis = ...)` accepts **`"lmom"`** in addition to
+  `"quantile"` and `"qss"` (the `"maxent"` basis added here was retired in 0.6.7).
+  Results appear at `det$tests$lmom`, with the flat alias `z_white_lmom`, and
+  `plotGammaHeatmap()` renders one panel per basis. All bases are 4-cell linear
+  contrasts on the block gammas and are scored by identical code, so any difference
+  between them comes from the weights alone.
 - **0.5.1 changes what `"lmom"` means.** It now integrates
   `lambda_{r+1} = int_0^1 Q(u) P*_r(u) du` over the **whole** unit interval, as the
-  definition requires, using the same surrogate quantile function as `"maxent"`
+  definition requires, using a surrogate quantile function
   (piecewise-uniform interior, continuity-matched exponential tails). The 0.5.0
   version integrated only `[tau_1, tau_m]` and then projected each shape row off the
   location row to repair the resulting location leak. **The two give different
   weights and different detections** -- e.g. the first L-skewness weight moves from
   0.095133 to 0.079479 -- so results from 0.5.0 and 0.5.1 are not comparable. The
   projection is gone; location invariance now holds by construction.
-- The `"lmom"` weights still depend on `taus` alone (no baseline). The `"maxent"`
-  weights are gradients and are evaluated at a standard-normal baseline, so they are
-  a mis-specified linearization under a markedly non-normal in-control law.
+- The `"lmom"` weights depend on `taus` alone (no baseline).
   Derivations: `simulation_study/lmom_3cfg/MONITORING_BASES_math.md`.
 
 ### Breaking changes (0.5.0)
@@ -253,8 +268,8 @@ probability of any false alarm across all blocks and cells jointly.
   square the old value** -- `lambda_iq = 0.5` becomes `lambda_iq2 = 0.25`
   (verified bit-identical on the ARCOS fit).
 - `getModel(adaptive_iq = TRUE)` is the **new default**: `lambda_iq2` is learned
-  by an EM recursion run between refits, controlled by `iq_em_max_iter` and
-  `iq_em_tol`. Diagnostics are returned in `fit$iq_em` (including a per-iteration
+  by an EM recursion run between refits, controlled by `iq_em_max_iter` (and, since
+  0.6.7, `iq_em_lp_tol`). Diagnostics are returned in `fit$iq_em` (including a per-iteration
   `trace`). Because every EM iteration is a *full refit*, this makes a default
   `getModel()` call several times more expensive; pass `adaptive_iq = FALSE` for
   the old single-fit behavior.
@@ -270,7 +285,7 @@ probability of any false alarm across all blocks and cells jointly.
   exact E-step, which a Monte-Carlo E-step does not provide. The M-step now
   always jumps. The outer loop still iterates, because `Sbar` is recomputed from
   a refit at the updated `lambda`.
-- The CV helpers (`cv_copss_map`, `cv_copss_grid`, `cv_copss_mcmc`) default
+- The CV helper (`cv_copss_grid`) defaults
   `adaptive_iq = FALSE` so a tuning sweep is not silently multiplied by the EM,
   and they now **error** on an unrecognized tuning name instead of silently
   dropping it -- a grid still carrying `lambda_iq` would otherwise have tuned
