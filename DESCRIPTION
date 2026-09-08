@@ -15,6 +15,7 @@ Description: Implements a Bayesian quintuple quantile charting approach
     Provides Bayesian quintuple quantile control charts and quantile shape statistics for various shifts.
 License: GPL-3
 Encoding: UTF-8
+LazyData: true
 Depends: R (>= 3.5.0)
 Imports:
     graphics,

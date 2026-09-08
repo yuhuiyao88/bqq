@@ -57,7 +57,10 @@ The package provides:
 
 The proposed method end to end: cross-validation of the prior hyperparameter, the final
 MAP fit with the EM-learned interquantile fusion weight, change-point detection on the
-three bases, and the figures. The whole block runs in a few minutes.
+three bases, and the figures. The block takes about 20 minutes on a laptop (the four
+CV fits with the EM in every fold, then the final fit with 20,000 Laplace draws); it
+flags blocks 8 and 9 on the QSS and L-moment bases, the blocks that contain the
+planted shift, and localizes the change to 2024-08-31.
 
 ```r
 library(bqq)
@@ -100,12 +103,12 @@ sqrt(fit$iq_em$lambda_iq2)   # the learned interquantile fusion weight
 eta <- getEta(fit, H = H, seed = 1)      # [draws x quantiles x time]
 det <- detectChangepoints_gamma(fit, taus, l = l, w = w, y = y, eta = eta,
                                 basis = c("quantile", "qss", "lmom"),
-                                statistic = "ui", adjust = "calib",
+                                statistic = "ui", adjust = "raw",
                                 signal_position = "score", alpha = 0.05,
                                 laplace_n_samples = 20000, seed = 1)
-det$tests$lmom$ui$calib                  # flagged blocks, L-moment basis, UI calibrated
+det$tests$lmom$ui$raw                  # flagged blocks, L-moment basis, UI raw
 det$detected_blocks                      # per block: onset, localized change-point, flags
-dates[det$detected_blocks$signal_obs[det$tests$lmom$ui$calib]]   # localized dates
+dates[det$detected_blocks$signal_obs[det$tests$lmom$ui$raw]]   # localized dates
 
 # ---- 6. Figures (the JSM 2026 style; ggplot2 and patchwork) ----
 library(ggplot2)
@@ -143,13 +146,58 @@ Notes on the steps:
 - **Step 4, the fit.** `fit$iq_em$trace` records each EM iteration; `warm_status`
   shows whether a warm-started optimizer moved. To pin the fusion weight instead of
   learning it, pass `adaptive_iq = FALSE, lambda_iq2 = <squared value>`.
-- **Step 5, detection.** `adjust` is the across-block decision rule of record
-  (`"calib"` here; `"raw"` is the package default; also `"holm"`, `"bonf"`, `"bh"`).
+- **Step 5, detection.** `adjust` is the across-block decision rule of record:
+  `"raw"` (the default, used throughout) tests each block at level `alpha`; the
+  alternatives are `"calib"`, `"holm"`, `"bonf"` and `"bh"`.
   Every plot renders exactly the rule, statistic and bases recorded in `det`.
 - **Step 6, figures.** Onset rules are off; localized change-points are circles; the
   profiles are bands only; a `Date` axis gets yearly breaks unless `date_breaks` is
   set. `plotBQQSummary()` needs patchwork; the comparator needs the changepoint
   package (optional).
+
+## Illustration: ARCOS oxycodone shipments in Alabama
+
+The package ships the series of the manuscript's illustration as `arcos_al`: daily
+oxycodone shipments to Alabama pharmacies, 2015-2019, in morphine milligram
+equivalents per state resident, built from the DEA ARCOS records released by The
+Washington Post (see `?arcos_al`). The analysis fits the residuals of a calendar
+adjustment (holiday and day of the week) with a 90-day warm-up period and 30-day
+blocks, here under the adaptive LASSO prior with the package's default local rates
+`lambda^2_{q,j} ~ Gamma(1, 0.05)`.
+
+```r
+library(bqq); library(ggplot2)
+data(arcos_al)
+y     <- as.numeric(residuals(lm(mme_per_capita ~ holiday + factor(weekday), data = arcos_al)))
+dates <- arcos_al$date
+taus  <- c(0.025, 0.25, 0.5, 0.75, 0.975)
+w <- 90; l <- 30
+H <- getSustainedShift(length(y), l = l, w = w)          # r = 58 blocks
+
+fit <- getModel(y, taus, H = H, w = w, prior_gamma = "adaptive_lasso",
+                fit_method = "map", map_hessian = TRUE, laplace_n_samples = 50000, seed = 1)
+fit$iq_em$trace                                          # the EM chain for lambda_iq
+
+det <- detectChangepoints_gamma(fit, taus, l = l, w = w, y = y,
+                                basis = c("quantile", "qss", "lmom"), statistic = "ui",
+                                adjust = "raw", signal_position = "score",
+                                laplace_n_samples = 50000, seed = 1)
+det$tests$lmom$ui$raw                                  # flagged blocks, L-moment basis
+dates[det$detected_blocks$signal_obs[det$tests$lmom$ui$raw]]
+
+# Binary segmentation (changepoint package) as the comparator of the talk
+cp <- changepoint::cpts(changepoint::cpt.meanvar(y, method = "BinSeg", Q = 60,
+                                                 penalty = "Asymptotic", pen.value = 0.05))
+eta <- getEta(fit, H = H, seed = 1)
+plotBQQSummary(fit, det, time = dates, basis = "lmom", eta = eta, H = H,
+               comparator = cp, comparator_label = "BinSeg", ylab = "residual")
+```
+
+![ARCOS, adaptive LASSO prior, l = 30](man/figures/arcos_l30_adaptive_lasso_summary_lmom.png)
+
+The fit takes about an hour on a laptop (58 blocks, five quantiles, 50,000 Laplace
+draws); `plotBQQSummary()` on the full draw set is slow, so thin `fit$laplace_samples`
+to a few thousand draws before plotting.
 
 ## Core Functions
 
@@ -256,6 +304,9 @@ probability of any false alarm across all blocks and cells jointly.
   the recorded families), `label_every` (thin the block labels; automatic beyond 12
   blocks) and `note_clipping`. New `plotBQQSummary()` composes the talk's three-panel
   figure. No change to fitting or detection.
+- **`arcos_al` dataset.** The daily ARCOS series of the manuscript's illustration ships
+  with the package (`data(arcos_al)`, `?arcos_al`); the README shows the l = 30 adaptive
+  LASSO analysis on it.
 
 ### 0.6.9
 
