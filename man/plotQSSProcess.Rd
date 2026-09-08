@@ -18,9 +18,11 @@ plotQSSProcess(
   title = NULL,
   xlab = "time",
   ylab = NULL,
-  show_onset = TRUE,
-  show_located = TRUE,
-  basis = NULL
+  show_onset = FALSE,
+  show_located = FALSE,
+  basis = NULL,
+  date_breaks = "12 months",
+  date_labels = "\%Y"
 )
 }
 \arguments{
@@ -31,7 +33,8 @@ computed internally if not supplied.}
 
 \item{H, X}{Optional design matrices passed to \code{getEta()} (default from fit).}
 
-\item{time}{Optional x-axis vector (default \code{seq_len(n)}).}
+\item{time}{Optional x-axis vector (default \code{seq_len(n)}). A \code{Date}
+vector gets yearly breaks with rotated labels.}
 
 \item{center, scale}{Map the fit-scale quantiles to the display scale.}
 
@@ -53,10 +56,17 @@ whichever \code{signal_position} was passed to \code{detectChangepoints_gamma()}
 the four panels are already named by their facet strips and each has its own
 free scale.}
 
-\item{show_onset, show_located}{Logical display toggles (default TRUE): draw
-the block-onset marks and the localized change-points recorded in
+\item{show_onset, show_located}{Logical display toggles (both default
+\code{FALSE}: the profile is drawn as bands only, as in the JSM 2026 talk):
+draw the block-onset rules and the localized change-point rules recorded in
 \code{detection}. They only hide layers; the decisions themselves are
 made (and recorded) by \code{detectChangepoints_gamma()}.}
+
+\item{basis}{Which detection family supplies the change-point marks (default
+\code{NULL}: the family recorded in \code{detection}, quantile first).}
+
+\item{date_breaks, date_labels}{Breaks and label format of the x axis when
+\code{time} is a \code{Date} vector.}
 }
 \value{
 A ggplot object (four stacked, free-y facets).

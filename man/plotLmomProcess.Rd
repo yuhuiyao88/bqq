@@ -18,9 +18,11 @@ plotLmomProcess(
   title = NULL,
   xlab = "time",
   ylab = NULL,
-  show_onset = TRUE,
-  show_located = TRUE,
-  basis = "lmom"
+  show_onset = FALSE,
+  show_located = FALSE,
+  basis = "lmom",
+  date_breaks = "12 months",
+  date_labels = "\%Y"
 )
 }
 \arguments{
@@ -31,7 +33,8 @@ computed internally if not supplied.}
 
 \item{H, X}{Optional design matrices passed to \code{getEta()} (default from fit).}
 
-\item{time}{Optional x-axis vector (default \code{seq_len(n)}).}
+\item{time}{Optional x-axis vector (default \code{seq_len(n)}). A \code{Date}
+vector gets yearly breaks with rotated labels.}
 
 \item{center, scale}{Map the fit-scale quantiles to the display scale.}
 
@@ -53,14 +56,18 @@ whichever \code{signal_position} was passed to \code{detectChangepoints_gamma()}
 the four panels are already named by their facet strips and each has its own
 free scale.}
 
-\item{show_onset, show_located}{Logical display toggles (default TRUE): draw
-the block-onset marks and the localized change-points recorded in
+\item{show_onset, show_located}{Logical display toggles (both default
+\code{FALSE}: the profile is drawn as bands only, as in the JSM 2026 talk):
+draw the block-onset rules and the localized change-point rules recorded in
 \code{detection}. They only hide layers; the decisions themselves are
 made (and recorded) by \code{detectChangepoints_gamma()}.}
 
 \item{basis}{Which detection family supplies the change-point marks. Defaults to
 \code{"lmom"}; pass another family name to override, or \code{NULL} for the
 package's legacy precedence (quantile wins when it was run).}
+
+\item{date_breaks, date_labels}{Breaks and label format of the x axis when
+\code{time} is a \code{Date} vector.}
 }
 \description{
 The L-moment counterpart of \code{\link{plotQSSProcess}}: posterior median and
@@ -68,9 +75,9 @@ credible band for each of the four approximate L-moments over time, computed by
 \code{\link{getLmom}} from the fitted quantiles.
 }
 \details{
-Change-point marks default to \code{basis = "lmom"}, so the vertical rules come
-from the SAME L-moment UI test that flags the L-moment heatmap panel. That is the
-whole point of this function: an L-moment profile carrying quantile-basis change
+Change-point marks (off by default) use \code{basis = "lmom"}, so when they are
+shown the vertical rules come from the SAME L-moment UI test that flags the
+L-moment heatmap panel: an L-moment profile carrying quantile-basis change
 points would be internally inconsistent.
 }
 \note{

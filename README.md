@@ -55,60 +55,101 @@ The package provides:
 
 ## Quick Start
 
+The proposed method end to end: cross-validation of the prior hyperparameter, the final
+MAP fit with the EM-learned interquantile fusion weight, change-point detection on the
+three bases, and the figures. The whole block runs in a few minutes.
+
 ```r
 library(bqq)
 set.seed(123)
 
-# 1. Simulate data with a sustained mean shift
-n <- 360
-y <- rnorm(n)
+# ---- 1. Data: a daily series with a sustained mean shift from day 252 on ----
+n     <- 360
+dates <- as.Date("2024-01-01") + 0:(n - 1)
+y     <- rnorm(n)
 y[252:n] <- y[252:n] + 1
 
-# 2. Quantile levels, block design, warm-up period
+# ---- 2. Quantile levels, warm-up period, block design ----
 taus <- c(0.025, 0.25, 0.5, 0.75, 0.975)
-l <- 30   # block length
-w <- 30   # warm-up period (in-control reference window)
-H <- getSustainedShift(n, l = l, w = w)
+w <- 30                                  # warm-up period: the in-control reference window
+l <- 30                                  # block length
+H <- getSustainedShift(n, l = l, w = w)  # r = (n - w) / l = 11 sustained-shift blocks
 
-# 3. Fit. The defaults implement the full method: unit-information warm-up prior
-#    on the intercepts, marginal LASSO quantile-regression initialization,
-#    tight-tolerance L-BFGS (history 25), spike-and-slab prior on the shifts,
-#    and an EM-learned interquantile fusion weight (adaptive_iq = TRUE).
+# ---- 3. Cross-validation of the prior hyperparameter ----
+# Order-preserved 2-fold CV over a grid whose columns are getModel() arguments.
+# lambda_iq2 is not in the grid: the EM learns it inside every CV fit and in the
+# final fit. Rows come back sorted by the validation criterion (loss = "score").
+grid <- expand.grid(lambda_nc = 50, spike_sd = c(0.1, 0.15, 0.25, 0.4))
+cv <- cv_copss_grid(y, taus, H = H, w = w, grid = grid,
+                    base_args = list(prior_gamma = "spike_slab", laplace_n_samples = 2000),
+                    loss = "score", seed = 1)
+cv[, c("lambda_nc", "spike_sd", "val_score", "val_pinball", "lambda_iq2_fit")]
+best <- cv[1, ]                          # the winner
+
+# ---- 4. Final fit at the winner: MAP + Laplace draws, EM for lambda_iq2 ----
 fit <- getModel(y, taus, H = H, w = w,
-                fit_method = "map",          # MAP + Laplace draws
-                prior_gamma = "spike_slab",
-                seed = 1)
+                prior_gamma = "spike_slab", spike_sd = best$spike_sd,
+                lambda_nc = best$lambda_nc,
+                fit_method = "map", map_hessian = TRUE,
+                laplace_n_samples = 20000, seed = 1)
+fit$map$termination          # optimizer exit status
+fit$iq_em$trace              # one row per EM iteration: lambda_iq, Sbar, lp_cd, gain
+sqrt(fit$iq_em$lambda_iq2)   # the learned interquantile fusion weight
 
-fit$map$termination   # human-readable optimizer exit status
-fit$map$coverage      # per-quantile empirical coverage of the fitted curves
-                      # (a bad fit warns automatically)
-fit$iq_em$lambda_iq2  # the learned squared IQ weight
-fit$iq_em$trace       # one row per EM iteration
+# ---- 5. Posterior predictive quantiles and change-point detection ----
+eta <- getEta(fit, H = H, seed = 1)      # [draws x quantiles x time]
+det <- detectChangepoints_gamma(fit, taus, l = l, w = w, y = y, eta = eta,
+                                basis = c("quantile", "qss", "lmom"),
+                                statistic = "ui", adjust = "calib",
+                                signal_position = "score", alpha = 0.05,
+                                laplace_n_samples = 20000, seed = 1)
+det$tests$lmom$ui$calib                  # flagged blocks, L-moment basis, UI calibrated
+det$detected_blocks                      # per block: onset, localized change-point, flags
+dates[det$detected_blocks$signal_obs[det$tests$lmom$ui$calib]]   # localized dates
 
-# To pin the IQ weight instead of learning it, give the SQUARED value.
-# `lambda_iq2` replaces the old `lambda_iq`: the effective fusion rate is
-# sqrt(lambda_iq2), so the former `lambda_iq = 0.2` is now `lambda_iq2 = 0.04`.
-fit_fixed <- getModel(y, taus, H = H, w = w,
-                      fit_method = "map", prior_gamma = "spike_slab",
-                      adaptive_iq = FALSE, lambda_iq2 = 0.04, seed = 1)
-
-# 4. Predictive quantile draws [iterations x quantiles x time]
-eta <- getEta(fit, H = H)
-
-# 5. Change-point detection: both bases, both statistics. `adjust` is the
-#    across-block decision rule of record ("calib" default; also "raw",
-#    "holm", "bonf", "bh") -- every plot renders exactly this rule.
-det <- detectChangepoints_gamma(fit, taus = taus, l = l, w = w,
-                                basis = c("quantile", "qss"),
-                                statistic = c("ui", "hotelling_t2"),
-                                adjust = "calib",
-                                y = y, eta = eta)
-
-# 6. Plots: pure renderers of the fit and the recorded detection decisions.
-plotQuantileProcess(fit, detection = det)        # bands + localized change-points
-plotQSSProcess(fit, eta = eta, detection = det)  # QSS profiles + detected blocks
-plotGammaHeatmap(fit, det)                       # blocks (grey) + cells (black)
+# ---- 6. Figures (the JSM 2026 style; ggplot2 and patchwork) ----
+library(ggplot2)
+ax <- list(date_breaks = "3 months", date_labels = "%Y-%m")   # yearly breaks by default
+p1 <- plotQuantileProcess(fit, time = dates, detection = det, ylab = "y",
+                          date_breaks = ax$date_breaks, date_labels = ax$date_labels)
+p2 <- plotLmomProcess(fit, eta = eta, H = H, time = dates, detection = det,
+                      date_breaks = ax$date_breaks, date_labels = ax$date_labels)
+p3 <- plotQSSProcess(fit, eta = eta, H = H, time = dates, detection = det,
+                     date_breaks = ax$date_breaks, date_labels = ax$date_labels)
+p4 <- plotGammaHeatmap(fit, detection = det,
+                       block_labels = format(dates[det$detected_blocks$obs_start]))
+# The talk's three-panel figure. A comparator's change points color the circles:
+# proposed, comparator, or both when within one block length of each other.
+cp <- changepoint::cpts(changepoint::cpt.meanvar(y, method = "BinSeg", Q = 12,
+                                                 penalty = "Asymptotic", pen.value = 0.05))
+p5 <- plotBQQSummary(fit, det, time = dates, basis = "lmom", eta = eta, H = H,
+                     comparator = cp, comparator_label = "BinSeg", ylab = "y",
+                     date_breaks = ax$date_breaks, date_labels = ax$date_labels)
+# ggsave("bqq_summary.png", p5, width = 12.6, height = 5.5, dpi = 200)
 ```
+
+![Quick Start summary figure](man/figures/readme_summary.png)
+
+Notes on the steps:
+
+- **Step 3, tuning grid.** Spike-and-slab priors (`"spike_slab"`, `"spike_slab_lasso"`)
+  tune `spike_sd`; the LASSO-type priors (`"lasso"`, `"adaptive_lasso"`, `"group_lasso"`,
+  `"het_group_lasso"`) tune `lambda_lasso2_b`, e.g.
+  `expand.grid(lambda_nc = 50, lambda_lasso2_b = c(0.01, 0.05, 0.1, 0.5, 1))` with
+  `base_args = list(prior_gamma = "lasso")`, and the final fit takes
+  `lambda_lasso2_b = best$lambda_lasso2_b`. Every CV fit runs the same chain as the
+  final fit (optimizer to convergence, one EM update, repeat until the complete-data
+  log posterior stops gaining), so the tuned value belongs to the model that is fitted.
+- **Step 4, the fit.** `fit$iq_em$trace` records each EM iteration; `warm_status`
+  shows whether a warm-started optimizer moved. To pin the fusion weight instead of
+  learning it, pass `adaptive_iq = FALSE, lambda_iq2 = <squared value>`.
+- **Step 5, detection.** `adjust` is the across-block decision rule of record
+  (`"calib"` here; `"raw"` is the package default; also `"holm"`, `"bonf"`, `"bh"`).
+  Every plot renders exactly the rule, statistic and bases recorded in `det`.
+- **Step 6, figures.** Onset rules are off; localized change-points are circles; the
+  profiles are bands only; a `Date` axis gets yearly breaks unless `date_breaks` is
+  set. `plotBQQSummary()` needs patchwork; the comparator needs the changepoint
+  package (optional).
 
 ## Core Functions
 
@@ -144,9 +185,12 @@ plotGammaHeatmap(fit, det)                       # blocks (grey) + cells (black)
 
 | Function | Description |
 |---|---|
-| `plotQuantileProcess()` | The five fitted quantile curves over time |
-| `plotGammaHeatmap()` | Shift heatmap: whitened-z fill, grey borders on OOC blocks, black borders on localized cells — all decisions (basis, statistic, `adjust`, constants) taken from the `detection` object; only display options (colors, labels, `mark_cells`) are settable |
-| `plotQSSProcess()` | QSS profiles over time with credible bands and detected blocks |
+| `plotQuantileProcess()` | The data with the five fitted quantile curves over time; localized change-points as circles, colored by source when a comparator method's change-points are passed (`comparator`); block-onset rules off by default |
+| `plotQSSProcess()` / `plotLmomProcess()` | QSS or L-moment profiles over time with credible bands (bands only by default) |
+| `plotGammaHeatmap()` | Shift heatmap: whitened-z fill, grey borders on OOC blocks, black borders on localized cells — all decisions (basis, statistic, `adjust`, constants) taken from the `detection` object; `basis` selects the panels, `label_every` thins the block labels |
+| `plotBQQSummary()` | The three-panel figure of the JSM 2026 talk: quantile process on the left, one basis's profile above its heatmap on the right (needs patchwork) |
+
+A `Date` vector passed as `time` gets yearly axis breaks with rotated labels.
 
 ## Model Details
 
@@ -198,6 +242,20 @@ block by the UI statistic (max |z̃|) and/or Hotelling T² (sum z̃²). Each tes
 the full across-block family — raw, Holm, Bonferroni, BH, and the **calibrated**
 single-step rule using analytic charting constants (Šidák-type) that control the
 probability of any false alarm across all blocks and cells jointly.
+
+### 0.6.10
+
+- **Plots follow the JSM 2026 ARCOS figures** (`Box/2026Summer/JSM/talk_figures_lmom.R`).
+  `plotQuantileProcess()` no longer draws block-onset rules by default (`show_onset = FALSE`)
+  and gains a comparator overlay: pass another method's change-point indices as
+  `comparator` and the localized change-points are drawn as circles colored by source
+  (proposed, comparator, both within `match_tol` observations, default the block length)
+  with an inset legend. `plotQSSProcess()` and `plotLmomProcess()` default to bands only
+  (`show_onset = show_located = FALSE`). A `Date` `time` vector gets yearly breaks
+  (`date_breaks`, `date_labels`). `plotGammaHeatmap()` gains `basis` (draw a subset of
+  the recorded families), `label_every` (thin the block labels; automatic beyond 12
+  blocks) and `note_clipping`. New `plotBQQSummary()` composes the talk's three-panel
+  figure. No change to fitting or detection.
 
 ### 0.6.9
 

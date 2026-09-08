@@ -16,7 +16,10 @@ plotGammaHeatmap(
   neg_color = NULL,
   z_limit = 3,
   xlab = "block",
-  ylab = NULL
+  ylab = NULL,
+  basis = NULL,
+  label_every = NULL,
+  note_clipping = TRUE
 )
 }
 \arguments{
@@ -28,7 +31,8 @@ are bordered. Older results without those fields fall back to a quantile panel
 (Holm-bordered), plus a QSS panel if \code{z_qss} is present.}
 
 \item{block_labels}{Optional labels for the block (x) axis (default block index).
-Must be unique (they become factor levels).}
+Must be unique (they become factor levels). When supplied, the labels are
+rotated.}
 
 \item{title}{Optional plot title.}
 
@@ -70,10 +74,15 @@ are already named by the quantile levels or the QSS contrasts. When both panels
 are stacked, \code{xlab}/\code{ylab} apply to each panel; \code{title} is
 applied once to the combined figure.}
 
-\item{show_onset, show_located}{Logical display toggles (default TRUE): draw
-the block-onset marks and the localized change-points recorded in
-\code{detection}. They only hide layers; the decisions themselves are
-made (and recorded) by \code{detectChangepoints_gamma()}.}
+\item{basis}{Optional subset of the families recorded in \code{detection} to
+draw, e.g. \code{"lmom"} for the L-moment panel alone (the talk's figure).
+Default \code{NULL}: every family the detection object carries.}
+
+\item{label_every}{Show every \code{label_every}-th block label on the x axis.
+Default \code{NULL}: all labels up to 12 blocks, about eight labels beyond.}
+
+\item{note_clipping}{Logical; append to the subtitle how many cells exceed the
+fixed fill limit (default \code{TRUE}).}
 }
 \value{
 A ggplot object when one family is shown; a \pkg{patchwork} of two panels

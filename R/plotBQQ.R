@@ -1,10 +1,15 @@
 # =============================================================================
 # BQQ visualization (ggplot2)
 # =============================================================================
-# Three generalized graph types, mirroring the package's worked demos:
-#   (1) plotQuantileProcess() - data with fitted quantile bands over time
-#   (2) plotQSSProcess()      - quantile shape statistics over time (ribbons)
+# Graph types, in the style of the ARCOS illustration of the JSM 2026 talk
+# (Box/2026Summer/JSM/talk_figures_lmom.R, 2026-08-05):
+#   (1) plotQuantileProcess() - data with fitted quantile bands over time; the
+#       localized change-points as circles, colored by source when a comparator
+#       method's change-points are supplied; no block-onset rules by default
+#   (2) plotQSSProcess() / plotLmomProcess() - shape profiles over time, bands only
 #   (3) plotGammaHeatmap()    - block-shift coefficient diagnosis (heatmap)
+#   (4) plotBQQSummary()      - (1) left, (2) over (3) right: the talk's figure
+# A Date `time` vector gets yearly breaks with rotated labels.
 # ggplot2 is an optional (Suggests) dependency; each function checks for it at
 # call time so the package still loads and fits without ggplot2 installed.
 
@@ -33,6 +38,37 @@
       strip.placement = "outside",
       strip.text.y.left = ggplot2::element_text(angle = 0)
     )
+}
+
+# Change-point marks by source (JSM 2026 talk): proposed method, comparator, both.
+.bqq_cp_pal <- c(proposed = "#C62828", comparator = "#1565C0", both = "#6A1B9A")
+
+# Time axis: a Date vector gets yearly breaks with rotated labels; any other x
+# type is left to ggplot2's defaults.
+.bqq_time_axis <- function(time, date_breaks = "12 months", date_labels = "%Y") {
+  if (!inherits(time, "Date")) return(list())
+  list(ggplot2::scale_x_date(date_breaks = date_breaks, date_labels = date_labels),
+       ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45, hjust = 1)))
+}
+
+# Legend drawn inside the panel, anchored at `position` (npc), as in the talk.
+.bqq_inset_legend <- function(position = c(0.995, 0.995)) {
+  th <- ggplot2::theme(
+    legend.justification = c(1, 1),
+    legend.background = ggplot2::element_rect(fill = grDevices::adjustcolor("white", 0.78), colour = NA),
+    legend.key = ggplot2::element_blank(),
+    legend.text = ggplot2::element_text(size = 9),
+    legend.key.size = ggplot2::unit(0.42, "cm"),
+    legend.margin = ggplot2::margin(2, 4, 2, 4))
+  if (as.package_version(getNamespaceVersion("ggplot2")) >= "3.5.0")
+    th + ggplot2::theme(legend.position = "inside", legend.position.inside = position)
+  else th + ggplot2::theme(legend.position = position)
+}
+
+# Block length recorded in a detection object (0 when it cannot be inferred).
+.bqq_block_length <- function(detection) {
+  os <- detection$detected_blocks$obs_start
+  if (length(os) >= 2L) as.integer(stats::median(diff(os))) else 0L
 }
 
 # Quantile levels: prefer an explicit argument, else recover from the fit.
@@ -99,24 +135,44 @@
 
 #' Plot the data process with fitted quantile bands over time
 #'
-#' Graph type 1: the observations with the five fitted quantile bands, and
-#' (optionally) crimson onset lines and within-block localized change-points
-#' from a \code{detectChangepoints_gamma()} result.
+#' Graph type 1: the observations with the five fitted quantile bands and, from a
+#' \code{detectChangepoints_gamma()} result, the localized change-points as
+#' circles on the series. Block-onset rules are off by default. When
+#' \code{comparator} gives the change-points of another method, the circles are
+#' colored by source: the proposed method, the comparator, or both when the two
+#' fall within \code{match_tol} observations of each other, with a legend inside
+#' the panel. This is the layout of the ARCOS illustration in the JSM 2026 talk.
 #'
 #' @param fit A MAP fit from \code{getModel()}.
-#' @param time Optional x-axis vector (default \code{seq_len(n)}).
+#' @param time Optional x-axis vector (default \code{seq_len(n)}). A \code{Date}
+#'   vector gets yearly breaks with rotated labels (see \code{date_breaks}).
 #' @param center,scale Map the fit-scale quantiles/data back to the display scale
 #'   as \code{value * scale + center} (e.g. the standardization used before fitting).
 #' @param detection Optional \code{detectChangepoints_gamma()} result. Its recorded
-#'   \code{basis} and \code{statistic} select which block test flags the blocks, and
-#'   its \code{detected_blocks} supplies the block onset (vertical line) and the
-#'   localized change-point \code{signal_obs} (circled point on the series), the
-#'   latter obtained under whichever \code{signal_position} was passed to
+#'   \code{basis}, \code{statistic} and \code{adjust} select which blocks are
+#'   flagged, and its \code{detected_blocks} supplies the block onset and the
+#'   localized change-point \code{signal_obs}, the latter obtained under whichever
+#'   \code{signal_position} was passed to \code{detectChangepoints_gamma()}.
+#' @param show_onset,show_located Logical display toggles: draw the block-onset
+#'   rules (default \code{FALSE}) and the localized change-points (default
+#'   \code{TRUE}) recorded in \code{detection}. They only hide layers; the
+#'   decisions themselves are made (and recorded) by
 #'   \code{detectChangepoints_gamma()}.
-#' @param show_onset,show_located Logical display toggles (default TRUE): draw
-#'   the block-onset marks and the localized change-points recorded in
-#'   \code{detection}. They only hide layers; the decisions themselves are
-#'   made (and recorded) by \code{detectChangepoints_gamma()}.
+#' @param basis Which detection family supplies the change-point marks. Default
+#'   \code{NULL}: the family recorded in \code{detection}, quantile first.
+#' @param comparator Optional integer vector of change-point positions
+#'   (observation indices) from a comparator method, e.g.
+#'   \code{changepoint::cpts()} of a binary-segmentation fit.
+#' @param comparator_label,proposed_label Legend labels of the comparator and of
+#'   the proposed method.
+#' @param match_tol A proposed and a comparator change-point within this many
+#'   observations of each other are drawn once, at the proposed location, as
+#'   "Both". Default \code{NULL}: the block length recorded in \code{detection},
+#'   since BQQ resolves a change only to its block.
+#' @param legend_position Anchor of the inset legend (npc coordinates of its
+#'   top-right corner); used only when \code{comparator} is supplied.
+#' @param date_breaks,date_labels Breaks and label format of the x axis when
+#'   \code{time} is a \code{Date} vector.
 #' @param title Optional plot title.
 #' @param xlab Label for the x axis (default \code{"time"}).
 #' @param ylab Label for the y axis (default \code{"value"}). Set it to name the
@@ -128,7 +184,11 @@
 plotQuantileProcess <- function(fit, time = NULL, center = 0, scale = 1,
                                 detection = NULL, title = NULL,
                                 xlab = "time", ylab = "value",
-                                show_onset = TRUE, show_located = TRUE, basis = NULL) {
+                                show_onset = FALSE, show_located = TRUE, basis = NULL,
+                                comparator = NULL, comparator_label = "Comparator",
+                                proposed_label = "Proposed (BQQ)", match_tol = NULL,
+                                legend_position = c(0.995, 0.995),
+                                date_breaks = "12 months", date_labels = "%Y") {
   .bqq_need_ggplot2()
   pal <- .bqq_pal
   taus <- if (!is.null(detection) && !is.null(detection$taus)) detection$taus
@@ -149,6 +209,9 @@ plotQuantileProcess <- function(fit, time = NULL, center = 0, scale = 1,
     ggplot2::geom_line(ggplot2::aes(y = q1), color = pal$steel, linewidth = 0.5) +
     ggplot2::geom_line(ggplot2::aes(y = q3), color = pal$steel, linewidth = 0.5) +
     ggplot2::geom_line(ggplot2::aes(y = med), color = pal$ink, linewidth = 0.9)
+
+  # localized change-points of the proposed method (from `detection`)
+  lp <- integer(0)
   if (!is.null(detection)) {
     loc <- .bqq_sig_blocks(detection, basis = basis)
     if (isTRUE(show_onset) && length(loc$onset) > 0) {
@@ -156,14 +219,47 @@ plotQuantileProcess <- function(fit, time = NULL, center = 0, scale = 1,
                                    linewidth = 0.6, alpha = 0.85)
     }
     lp <- loc$located[!is.na(loc$located) & loc$located >= 1 & loc$located <= n]
-    if (isTRUE(show_located) && length(lp) > 0) {
-      p <- p + ggplot2::geom_point(
-        data = data.frame(x = time[lp], y = yv[lp]),
-        ggplot2::aes(x = x, y = y), shape = 21, fill = pal$crimson, color = "black",
-        size = 2.6, stroke = 0.8)
+  }
+  cp <- if (is.null(comparator)) integer(0) else as.integer(comparator)
+  cp <- cp[!is.na(cp) & cp >= 1 & cp <= n]
+
+  if (isTRUE(show_located)) {
+    if (is.null(comparator)) {
+      if (length(lp) > 0) {
+        p <- p + ggplot2::geom_point(
+          data = data.frame(x = time[lp], y = yv[lp]),
+          ggplot2::aes(x = x, y = y), shape = 21, fill = pal$crimson, color = "black",
+          size = 2.6, stroke = 0.8)
+      }
+    } else {
+      # Comparator overlay (talk_figures_lmom.R): a proposed and a comparator point
+      # within `match_tol` observations are one detection, drawn once at the
+      # proposed location. All three legend keys are shown even when a source is
+      # empty, so figures of different series read the same.
+      tol <- if (!is.null(match_tol)) as.numeric(match_tol)
+             else if (!is.null(detection)) .bqq_block_length(detection) else 0
+      p_hit <- vapply(lp, function(b) any(abs(cp - b) <= tol), logical(1))
+      c_hit <- vapply(cp, function(b) any(abs(lp - b) <= tol), logical(1))
+      lv <- c(proposed_label, comparator_label, "Both")
+      mk <- function(v, lab) data.frame(idx = as.integer(v), src = rep(lab, length(v)))
+      d <- rbind(mk(lp[!p_hit], lv[1]), mk(cp[!c_hit], lv[2]), mk(lp[p_hit], lv[3]))
+      miss <- setdiff(lv, unique(d$src))
+      if (length(miss)) d <- rbind(d, data.frame(idx = NA_integer_, src = miss))
+      d$src <- factor(d$src, levels = lv)
+      d$x <- time[d$idx]; d$yv <- yv[d$idx]
+      cols <- stats::setNames(unname(.bqq_cp_pal[c("proposed", "comparator", "both")]), lv)
+      p <- p +
+        ggplot2::geom_point(data = d, ggplot2::aes(x = x, y = yv, fill = src),
+                            shape = 21, colour = "black", size = 2.6, stroke = 0.7,
+                            inherit.aes = FALSE, na.rm = TRUE) +
+        ggplot2::scale_fill_manual(values = cols, name = NULL, drop = FALSE) +
+        ggplot2::guides(fill = ggplot2::guide_legend(override.aes = list(size = 3.2)))
     }
   }
-  p + ggplot2::labs(x = xlab, y = ylab, title = title) + .bqq_theme()
+  p <- p + ggplot2::labs(x = xlab, y = ylab, title = title) + .bqq_theme() +
+    .bqq_time_axis(time, date_breaks, date_labels)
+  if (!is.null(comparator) && isTRUE(show_located)) p <- p + .bqq_inset_legend(legend_position)
+  p
 }
 
 
@@ -178,7 +274,8 @@ plotQuantileProcess <- function(fit, time = NULL, center = 0, scale = 1,
 #' @param eta Optional posterior predictive-quantile array from \code{getEta()};
 #'   computed internally if not supplied.
 #' @param H,X Optional design matrices passed to \code{getEta()} (default from fit).
-#' @param time Optional x-axis vector (default \code{seq_len(n)}).
+#' @param time Optional x-axis vector (default \code{seq_len(n)}). A \code{Date}
+#'   vector gets yearly breaks with rotated labels.
 #' @param center,scale Map the fit-scale quantiles to the display scale.
 #' @param level Credible-band level (default 0.95).
 #' @param detection Optional \code{detectChangepoints_gamma()} result. Its recorded
@@ -186,23 +283,29 @@ plotQuantileProcess <- function(fit, time = NULL, center = 0, scale = 1,
 #'   its \code{detected_blocks} supplies both the block onset (dashed line) and the
 #'   localized change-point \code{signal_obs} (solid line), the latter obtained under
 #'   whichever \code{signal_position} was passed to \code{detectChangepoints_gamma()}.
-#' @param show_onset,show_located Logical display toggles (default TRUE): draw
-#'   the block-onset marks and the localized change-points recorded in
+#' @param show_onset,show_located Logical display toggles (both default
+#'   \code{FALSE}: the profile is drawn as bands only, as in the JSM 2026 talk):
+#'   draw the block-onset rules and the localized change-point rules recorded in
 #'   \code{detection}. They only hide layers; the decisions themselves are
 #'   made (and recorded) by \code{detectChangepoints_gamma()}.
+#' @param basis Which detection family supplies the change-point marks (default
+#'   \code{NULL}: the family recorded in \code{detection}, quantile first).
 #' @param seed Optional seed for \code{getEta()}.
 #' @param title Optional plot title.
 #' @param xlab Label for the x axis (default \code{"time"}).
 #' @param ylab Label for the shared y axis. Default \code{NULL} (no label), since
 #'   the four panels are already named by their facet strips and each has its own
 #'   free scale.
+#' @param date_breaks,date_labels Breaks and label format of the x axis when
+#'   \code{time} is a \code{Date} vector.
 #' @return A ggplot object (four stacked, free-y facets).
 #' @export
 plotQSSProcess <- function(fit, eta = NULL, H = NULL, X = NULL, time = NULL,
                            center = 0, scale = 1, level = 0.95, detection = NULL,
                            seed = NULL, title = NULL,
                            xlab = "time", ylab = NULL,
-                           show_onset = TRUE, show_located = TRUE, basis = NULL) {
+                           show_onset = FALSE, show_located = FALSE, basis = NULL,
+                           date_breaks = "12 months", date_labels = "%Y") {
   .bqq_need_ggplot2()
   pal <- .bqq_pal
   taus <- if (!is.null(detection) && !is.null(detection$taus)) detection$taus
@@ -245,7 +348,8 @@ plotQSSProcess <- function(fit, eta = NULL, H = NULL, X = NULL, time = NULL,
     ggplot2::labs(x = xlab, y = ylab, title = title) + .bqq_theme() +
     ggplot2::theme(
       panel.border = ggplot2::element_rect(color = "grey55", fill = NA, linewidth = 0.5),
-      panel.spacing.y = ggplot2::unit(0.6, "lines"))
+      panel.spacing.y = ggplot2::unit(0.6, "lines")) +
+    .bqq_time_axis(time, date_breaks, date_labels)
 }
 
 #' L-moment shape profile over time
@@ -254,9 +358,9 @@ plotQSSProcess <- function(fit, eta = NULL, H = NULL, X = NULL, time = NULL,
 #' credible band for each of the four approximate L-moments over time, computed by
 #' \code{\link{getLmom}} from the fitted quantiles.
 #'
-#' Change-point marks default to \code{basis = "lmom"}, so the vertical rules come
-#' from the SAME L-moment UI test that flags the L-moment heatmap panel. That is the
-#' whole point of this function: an L-moment profile carrying quantile-basis change
+#' Change-point marks (off by default) use \code{basis = "lmom"}, so when they are
+#' shown the vertical rules come from the SAME L-moment UI test that flags the
+#' L-moment heatmap panel: an L-moment profile carrying quantile-basis change
 #' points would be internally inconsistent.
 #'
 #' @inheritParams plotQSSProcess
@@ -272,8 +376,9 @@ plotLmomProcess <- function(fit, eta = NULL, H = NULL, X = NULL, time = NULL,
                             center = 0, scale = 1, level = 0.95, detection = NULL,
                             seed = NULL, title = NULL,
                             xlab = "time", ylab = NULL,
-                            show_onset = TRUE, show_located = TRUE,
-                            basis = "lmom") {
+                            show_onset = FALSE, show_located = FALSE,
+                            basis = "lmom",
+                            date_breaks = "12 months", date_labels = "%Y") {
   .bqq_need_ggplot2()
   pal <- .bqq_pal
   taus <- if (!is.null(detection) && !is.null(detection$taus)) detection$taus
@@ -314,7 +419,8 @@ plotLmomProcess <- function(fit, eta = NULL, H = NULL, X = NULL, time = NULL,
     ggplot2::labs(x = xlab, y = ylab, title = title) + .bqq_theme() +
     ggplot2::theme(
       panel.border = ggplot2::element_rect(color = "grey55", fill = NA, linewidth = 0.5),
-      panel.spacing.y = ggplot2::unit(0.6, "lines"))
+      panel.spacing.y = ggplot2::unit(0.6, "lines")) +
+    .bqq_time_axis(time, date_breaks, date_labels)
 }
 
 
@@ -335,12 +441,16 @@ plotLmomProcess <- function(fit, eta = NULL, H = NULL, X = NULL, time = NULL,
 #'   \code{basis}/\code{statistic} fields drive which panels appear and how cells
 #'   are bordered. Older results without those fields fall back to a quantile panel
 #'   (Holm-bordered), plus a QSS panel if \code{z_qss} is present.
-#' @param show_onset,show_located Logical display toggles (default TRUE): draw
-#'   the block-onset marks and the localized change-points recorded in
-#'   \code{detection}. They only hide layers; the decisions themselves are
-#'   made (and recorded) by \code{detectChangepoints_gamma()}.
+#' @param basis Optional subset of the families recorded in \code{detection} to
+#'   draw, e.g. \code{"lmom"} for the L-moment panel alone (the talk's figure).
+#'   Default \code{NULL}: every family the detection object carries.
 #' @param block_labels Optional labels for the block (x) axis (default block index).
-#'   Must be unique (they become factor levels).
+#'   Must be unique (they become factor levels). When supplied, the labels are
+#'   rotated.
+#' @param label_every Show every \code{label_every}-th block label on the x axis.
+#'   Default \code{NULL}: all labels up to 12 blocks, about eight labels beyond.
+#' @param note_clipping Logical; append to the subtitle how many cells exceed the
+#'   fixed fill limit (default \code{TRUE}).
 #' @param title Optional plot title.
 #' @param mark_cells Logical; when \code{TRUE} (default) the cells responsible for a
 #'   OOC block are given a second, darker border. A block that the block-level
@@ -381,7 +491,8 @@ plotGammaHeatmap <- function(fit, detection = NULL, block_labels = NULL,
                              block_color = NULL, cell_color = "black",
                              pos_color = NULL, neg_color = NULL,
                              z_limit = 3,
-                             xlab = "block", ylab = NULL) {
+                             xlab = "block", ylab = NULL,
+                             basis = NULL, label_every = NULL, note_clipping = TRUE) {
   .bqq_need_ggplot2()
   pal <- .bqq_pal
   taus <- if (!is.null(detection) && !is.null(detection$taus)) detection$taus
@@ -390,6 +501,11 @@ plotGammaHeatmap <- function(fit, detection = NULL, block_labels = NULL,
   r <- if (!is.null(fit$H)) ncol(fit$H) else 0L
   if (r == 0) stop("No block-shift design (fit$H has no columns).", call. = FALSE)
   blk <- if (!is.null(block_labels)) block_labels else seq_len(r)
+  if (length(blk) != r || anyDuplicated(blk))
+    stop("block_labels must be ", r, " unique labels.", call. = FALSE)
+  every <- if (!is.null(label_every)) max(1L, as.integer(label_every))
+           else if (r <= 12L) 1L else ceiling(r / 8)
+  x_breaks <- as.character(blk)[seq(1L, r, by = every)]
 
   ## ---- everything below renders the decisions RECORDED in `detection`: which
   ## families (basis), which block statistic, and which across-block rule
@@ -400,6 +516,13 @@ plotGammaHeatmap <- function(fit, detection = NULL, block_labels = NULL,
           else if (!is.null(detection$basis)) detection$basis
           else c("quantile", if (!is.null(detection$z_qss)) "qss")
   fams <- intersect(ALL_FAMS, fams)
+  if (!is.null(basis)) {
+    bad <- setdiff(basis, fams)
+    if (length(bad))
+      stop("basis '", paste(bad, collapse = "', '"), "' was not run in this detection object.",
+           call. = FALSE)
+    fams <- intersect(fams, basis)
+  }
   # keep only families the detection object actually carries cells for
   have <- function(f) switch(f,
     quantile = TRUE,
@@ -484,7 +607,7 @@ plotGammaHeatmap <- function(fit, detection = NULL, block_labels = NULL,
       lim <- obs_max; if (!is.finite(lim) || lim == 0) lim <- 1
       d$fill_val <- d$val
     }
-    if (clipped > 0L) {
+    if (clipped > 0L && isTRUE(note_clipping)) {
       subtitle <- paste0(subtitle, sprintf("  (fill fixed at +/-%g; %d cell%s clipped, max |z| = %.2f)",
                                            lim, clipped, if (clipped == 1L) "" else "s", obs_max))
     }
@@ -494,14 +617,18 @@ plotGammaHeatmap <- function(fit, detection = NULL, block_labels = NULL,
       ggplot2::geom_tile(data = d[d$sig, , drop = FALSE], fill = NA,
                          color = blk_col, linewidth = 0.6) +
       ggplot2::geom_tile(data = d[d$cell, , drop = FALSE], fill = NA,
-                         color = cell_color, linewidth = 1.0)
+                         color = cell_color, linewidth = 1.0) +
+      ggplot2::scale_x_discrete(breaks = x_breaks)
     if (diverging) {
       g <- g + ggplot2::scale_fill_gradient2(low = neg_color, mid = "white", high = pos_color,
                                              midpoint = 0, limits = c(-lim, lim))
     } else {
       g <- g + ggplot2::scale_fill_gradient(low = "white", high = pal$crimson)
     }
-    g + ggplot2::labs(x = xlab, y = ylab, fill = fill_lab, subtitle = subtitle) + .bqq_theme()
+    g <- g + ggplot2::labs(x = xlab, y = ylab, fill = fill_lab, subtitle = subtitle) + .bqq_theme()
+    if (!is.null(block_labels))
+      g <- g + ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45, hjust = 1))
+    g
   }
 
   panels <- list()
@@ -583,4 +710,83 @@ plotGammaHeatmap <- function(fit, detection = NULL, block_labels = NULL,
   message(length(panels), " basis panels are present; install 'patchwork' to stack ",
           "them into one figure. Returning a named list of ggplot objects instead.")
   panels
+}
+
+
+#' Summary figure: quantile process, shape profile and shift heatmap
+#'
+#' The three-panel layout of the ARCOS illustration in the JSM 2026 talk. Left:
+#' the data with the fitted quantile bands and the localized change-points
+#' (\code{\link{plotQuantileProcess}}, with the comparator overlay when
+#' \code{comparator} is given). Right: the shape profile of one basis
+#' (\code{\link{plotLmomProcess}} or \code{\link{plotQSSProcess}}, bands only)
+#' above that basis's shift heatmap (\code{\link{plotGammaHeatmap}}). All three
+#' panels read the same \code{detection} object, so the circles, the bordered
+#' blocks and the heatmap subtitle follow one decision rule.
+#'
+#' @inheritParams plotQuantileProcess
+#' @param detection A \code{detectChangepoints_gamma()} result whose \code{basis}
+#'   includes the requested shape basis.
+#' @param basis The shape basis shown on the right and used for the change-point
+#'   marks: \code{"lmom"} (default) or \code{"qss"}.
+#' @param eta,H,X Passed to the profile panel; see \code{\link{plotQSSProcess}}.
+#' @param level Credible-band level of the profile (default 0.95).
+#' @param block_labels Labels of the heatmap columns. Default \code{NULL}: the
+#'   block start dates when \code{time} is a \code{Date} vector, else the block
+#'   start indices.
+#' @param label_every Passed to \code{\link{plotGammaHeatmap}}.
+#' @param widths,heights Relative widths of the left and right columns, and
+#'   relative heights of the profile and heatmap panels.
+#' @param seed Optional seed for \code{getEta()}.
+#' @return A \pkg{patchwork} object. The talk used 12.6 by 5.5 inches at 200 dpi.
+#' @export
+plotBQQSummary <- function(fit, detection, time = NULL, basis = c("lmom", "qss"),
+                           eta = NULL, H = NULL, X = NULL, level = 0.95,
+                           comparator = NULL, comparator_label = "Comparator",
+                           proposed_label = "Proposed (BQQ)", match_tol = NULL,
+                           ylab = "value", block_labels = NULL, label_every = NULL,
+                           title = NULL, widths = c(1.05, 1), heights = c(1, 0.8),
+                           date_breaks = "12 months", date_labels = "%Y", seed = NULL) {
+  .bqq_need_ggplot2()
+  if (!requireNamespace("patchwork", quietly = TRUE))
+    stop("plotBQQSummary() needs the 'patchwork' package.", call. = FALSE)
+  basis <- match.arg(basis)
+  if (is.null(detection$tests[[basis]]))
+    stop("`detection` does not carry the '", basis, "' basis; rerun ",
+         "detectChangepoints_gamma() with it in `basis`.", call. = FALSE)
+  n <- length(fit$y)
+  if (is.null(time)) time <- seq_len(n)
+  if (is.null(eta)) eta <- getEta(fit, H = H, X = X, seed = seed)
+  if (is.null(block_labels)) {
+    os <- detection$detected_blocks$obs_start
+    block_labels <- if (inherits(time, "Date")) format(time[os]) else as.character(os)
+  }
+  no_x <- ggplot2::theme(axis.title.x = ggplot2::element_blank())
+  p_q <- plotQuantileProcess(fit, time = time, detection = detection, basis = basis,
+                             show_onset = FALSE, ylab = ylab,
+                             comparator = comparator, comparator_label = comparator_label,
+                             proposed_label = proposed_label, match_tol = match_tol,
+                             date_breaks = date_breaks, date_labels = date_labels) + no_x
+  prof <- if (basis == "lmom") plotLmomProcess else plotQSSProcess
+  p_s <- prof(fit, eta = eta, H = H, X = X, time = time, level = level,
+              detection = detection, basis = basis,
+              show_onset = FALSE, show_located = FALSE,
+              date_breaks = date_breaks, date_labels = date_labels) + no_x +
+    ggplot2::theme(axis.text.y = ggplot2::element_text(size = 7),
+                   strip.text = ggplot2::element_text(size = 8))
+  p_h <- plotGammaHeatmap(fit, detection = detection, block_labels = block_labels,
+                          basis = basis, label_every = label_every,
+                          note_clipping = FALSE) + no_x +
+    ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45, hjust = 1, size = 7),
+                   axis.text.y = ggplot2::element_text(size = 7),
+                   legend.key.width = ggplot2::unit(0.26, "cm"),
+                   legend.key.height = ggplot2::unit(0.50, "cm"),
+                   legend.text = ggplot2::element_text(size = 6),
+                   legend.title = ggplot2::element_text(size = 7),
+                   plot.subtitle = ggplot2::element_text(size = 9))
+  right <- patchwork::wrap_elements(p_s) / patchwork::wrap_elements(p_h) +
+    patchwork::plot_layout(heights = heights)
+  fig <- (patchwork::wrap_elements(p_q) | right) + patchwork::plot_layout(widths = widths)
+  if (!is.null(title)) fig <- fig + patchwork::plot_annotation(title = title)
+  fig
 }

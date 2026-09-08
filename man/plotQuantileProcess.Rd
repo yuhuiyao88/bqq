@@ -13,25 +13,32 @@ plotQuantileProcess(
   title = NULL,
   xlab = "time",
   ylab = "value",
-  show_onset = TRUE,
+  show_onset = FALSE,
   show_located = TRUE,
-  basis = NULL
+  basis = NULL,
+  comparator = NULL,
+  comparator_label = "Comparator",
+  proposed_label = "Proposed (BQQ)",
+  match_tol = NULL,
+  legend_position = c(0.995, 0.995),
+  date_breaks = "12 months",
+  date_labels = "\%Y"
 )
 }
 \arguments{
 \item{fit}{A MAP fit from \code{getModel()}.}
 
-\item{time}{Optional x-axis vector (default \code{seq_len(n)}).}
+\item{time}{Optional x-axis vector (default \code{seq_len(n)}). A \code{Date}
+vector gets yearly breaks with rotated labels (see \code{date_breaks}).}
 
 \item{center, scale}{Map the fit-scale quantiles/data back to the display scale
 as \code{value * scale + center} (e.g. the standardization used before fitting).}
 
 \item{detection}{Optional \code{detectChangepoints_gamma()} result. Its recorded
-\code{basis} and \code{statistic} select which block test flags the blocks, and
-its \code{detected_blocks} supplies the block onset (vertical line) and the
-localized change-point \code{signal_obs} (circled point on the series), the
-latter obtained under whichever \code{signal_position} was passed to
-\code{detectChangepoints_gamma()}.}
+\code{basis}, \code{statistic} and \code{adjust} select which blocks are
+flagged, and its \code{detected_blocks} supplies the block onset and the
+localized change-point \code{signal_obs}, the latter obtained under whichever
+\code{signal_position} was passed to \code{detectChangepoints_gamma()}.}
 
 \item{title}{Optional plot title.}
 
@@ -42,16 +49,42 @@ series actually plotted, e.g. \code{"residual"} when the model was fitted to
 regression residuals, or \code{"difference"} when it was fitted to their
 first-order differences. Use \code{NULL} to drop the label.}
 
-\item{show_onset, show_located}{Logical display toggles (default TRUE): draw
-the block-onset marks and the localized change-points recorded in
-\code{detection}. They only hide layers; the decisions themselves are
-made (and recorded) by \code{detectChangepoints_gamma()}.}
+\item{show_onset, show_located}{Logical display toggles: draw the block-onset
+rules (default \code{FALSE}) and the localized change-points (default
+\code{TRUE}) recorded in \code{detection}. They only hide layers; the
+decisions themselves are made (and recorded) by
+\code{detectChangepoints_gamma()}.}
+
+\item{basis}{Which detection family supplies the change-point marks. Default
+\code{NULL}: the family recorded in \code{detection}, quantile first.}
+
+\item{comparator}{Optional integer vector of change-point positions
+(observation indices) from a comparator method, e.g.
+\code{changepoint::cpts()} of a binary-segmentation fit.}
+
+\item{comparator_label, proposed_label}{Legend labels of the comparator and of
+the proposed method.}
+
+\item{match_tol}{A proposed and a comparator change-point within this many
+observations of each other are drawn once, at the proposed location, as
+"Both". Default \code{NULL}: the block length recorded in \code{detection},
+since BQQ resolves a change only to its block.}
+
+\item{legend_position}{Anchor of the inset legend (npc coordinates of its
+top-right corner); used only when \code{comparator} is supplied.}
+
+\item{date_breaks, date_labels}{Breaks and label format of the x axis when
+\code{time} is a \code{Date} vector.}
 }
 \value{
 A ggplot object.
 }
 \description{
-Graph type 1: the observations with the five fitted quantile bands, and
-(optionally) crimson onset lines and within-block localized change-points
-from a \code{detectChangepoints_gamma()} result.
+Graph type 1: the observations with the five fitted quantile bands and, from a
+\code{detectChangepoints_gamma()} result, the localized change-points as
+circles on the series. Block-onset rules are off by default. When
+\code{comparator} gives the change-points of another method, the circles are
+colored by source: the proposed method, the comparator, or both when the two
+fall within \code{match_tol} observations of each other, with a legend inside
+the panel. This is the layout of the ARCOS illustration in the JSM 2026 talk.
 }
