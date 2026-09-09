@@ -9,7 +9,7 @@ detectChangepoints_gamma(
   taus,
   l,
   w,
-  signal_position = c("first", "last", "middle", "max_deviation", "pinball", "score"),
+  signal_position = c("score", "first", "last", "middle", "max_deviation", "pinball"),
   y = NULL,
   eta = NULL,
   laplace_n_samples = 1000,
@@ -30,17 +30,20 @@ detectChangepoints_gamma(
 \item{w}{Warm-up period}
 
 \item{signal_position}{Method to determine signal position within a significant block:
-- "first": First observation in the block (default)
+- "first": First observation in the block (the block onset)
 - "last": Last observation in the block
 - "middle": Middle observation in the block
 - "max_deviation": Observation with maximum deviation from the predictive median (fitted eta at tau = 0.5)
-- "score": Observation that splits the block to minimise the negative unrestricted
+- "score" (default): Observation that splits the block to minimise the negative unrestricted
   score likelihood of the manuscript's Eq. (6), evaluated on the block alone with an
   intercept plus a step at the candidate. Writing S1 and S2 for the quantile-score sums
   over the pre- and post-candidate segments, of sizes n1 and n2, and Q for the quantile
   kernel matrix with Q[a,b] = min(tau_a, tau_b) - tau_a * tau_b, the criterion is
   0.5 * (t(S1) %*% solve(Q) %*% S1 / n1 + t(S2) %*% solve(Q) %*% S2 / n2).
   This is the criterion \code{cv_copss} selects on, so localisation and tuning agree.
+  A minimiser at the last observation of the block is reported at the block onset,
+  which flags a transition that may straddle adjacent blocks (manuscript Sec. 3.4).
+  Requires \code{y}; without it the onset is reported with one warning.
 - "pinball": Observation that splits the block to minimize the equally weighted pinball
   (check) loss between the pre-block and block fitted quantile vectors. NOTE: this is
   NOT the cross-validation criterion; \code{cv_copss} defaults to the score loss. The

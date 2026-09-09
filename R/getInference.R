@@ -679,17 +679,20 @@ getEta <- function(fit_result, H = NULL, X = NULL, offset = NULL, n_samples = 10
 #' @param l Block length (for converting H-column to observation)
 #' @param w Warm-up period
 #' @param signal_position Method to determine signal position within a significant block:
-#'   - "first": First observation in the block (default)
+#'   - "first": First observation in the block (the block onset)
 #'   - "last": Last observation in the block
 #'   - "middle": Middle observation in the block
 #'   - "max_deviation": Observation with maximum deviation from the predictive median (fitted eta at tau = 0.5)
-#'   - "score": Observation that splits the block to minimise the negative unrestricted
+#'   - "score" (default): Observation that splits the block to minimise the negative unrestricted
 #'     score likelihood of the manuscript's Eq. (6), evaluated on the block alone with an
 #'     intercept plus a step at the candidate. Writing S1 and S2 for the quantile-score sums
 #'     over the pre- and post-candidate segments, of sizes n1 and n2, and Q for the quantile
 #'     kernel matrix with Q[a,b] = min(tau_a, tau_b) - tau_a * tau_b, the criterion is
 #'     0.5 * (t(S1) %*% solve(Q) %*% S1 / n1 + t(S2) %*% solve(Q) %*% S2 / n2).
 #'     This is the criterion \code{cv_copss} selects on, so localisation and tuning agree.
+#'     A minimiser at the last observation of the block is reported at the block onset,
+#'     which flags a transition that may straddle adjacent blocks (manuscript Sec. 3.4).
+#'     Requires \code{y}; without it the onset is reported with one warning.
 #'   - "pinball": Observation that splits the block to minimize the equally weighted pinball
 #'     (check) loss between the pre-block and block fitted quantile vectors. NOTE: this is
 #'     NOT the cross-validation criterion; \code{cv_copss} defaults to the score loss. The
@@ -765,7 +768,7 @@ getEta <- function(fit_result, H = NULL, X = NULL, offset = NULL, n_samples = 10
 #'   \code{basis}/\code{statistic} are also returned.
 #' @export
 detectChangepoints_gamma <- function(fit_result, taus, l, w,
-                                     signal_position = c("first", "last", "middle", "max_deviation", "pinball", "score"),
+                                     signal_position = c("score", "first", "last", "middle", "max_deviation", "pinball"),
                                      y = NULL, eta = NULL,
                                      laplace_n_samples = 1000, alpha = 0.05,
                                      basis = c("quantile", "qss", "lmom"),
@@ -1107,6 +1110,11 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
                     drop(crossprod(S2, Qi %*% S2)) / n2)
         if (L < best_L) { best_L <- L; best_c <- cc }
       }
+      # Manuscript Sec. 3.4: a minimiser at the block boundary is reported at the
+      # onset (the transition may straddle adjacent blocks). The onset itself is
+      # never a candidate (empty pre-segment), so the boundary case is the last
+      # observation of the block.
+      if (best_c == obs_end) best_c <- obs_start
       return(best_c)
 
     } else if (position_method == "pinball") {
@@ -1174,7 +1182,14 @@ detectChangepoints_gamma <- function(fit_result, taus, l, w,
   detected_blocks$obs_start <- sapply(detected_blocks$h_col, function(j) h_to_obs(j)[1])
   detected_blocks$obs_end <- sapply(detected_blocks$h_col, function(j) h_to_obs(j)[2])
 
-  # Add signal observation based on signal_position method
+  # Add signal observation based on signal_position method. The default "score"
+  # needs y; fall back to the block onset with a single warning rather than one
+  # warning per block.
+  if (signal_position == "score" && is.null(y)) {
+    warning("signal_position = \"score\" requires `y`; reporting the block onset (\"first\") instead.",
+            call. = FALSE)
+    signal_position <- "first"
+  }
   detected_blocks$signal_obs <- sapply(detected_blocks$h_col, function(j) {
     get_signal_obs(j, signal_position, y, eta, taus, eta_point)
   })
