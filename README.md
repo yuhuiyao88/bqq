@@ -42,7 +42,9 @@ The package provides:
   LASSO, adaptive LASSO, group LASSO, heterogeneous group LASSO, and
   spike-and-slab LASSO alternatives)
 - **Interquantile (IQ) shrinkage** that fuses adjacent-quantile coefficients with
-  data-adaptive weights, and a **non-crossing penalty** preserving quantile ordering
+  data-adaptive weights, its weight `lambda_iq` **tuned by cross-validation on a grid**
+  together with the prior hyperparameter, and a **non-crossing penalty** preserving
+  quantile ordering
 - **Change-point detection** by posterior whitening of the shift coefficients
   followed by union–intersection (UI) and Hotelling T² block tests, run on the raw
   quantile basis and/or the QSS shape basis, with the full across-block adjustment
@@ -55,12 +57,13 @@ The package provides:
 
 ## Quick Start
 
-The proposed method end to end: cross-validation of the prior hyperparameter, the final
-MAP fit with the EM-learned interquantile fusion weight, change-point detection on the
-three bases, and the figures. The block takes about 20 minutes on a laptop (the four
-CV fits with the EM in every fold, then the final fit with 20,000 Laplace draws); it
-flags blocks 8 and 9 on the QSS and L-moment bases, the blocks that contain the
-planted shift, and localizes the change to 2024-08-31.
+The proposed method end to end: a grid search by cross-validation over the prior
+hyperparameter and the interquantile fusion weight `lambda_iq`, the final MAP fit at the
+winning pair, change-point detection on the three bases, and the figures. No EM is
+run anywhere: every CV fit and the final fit is a single MAP fit with `adaptive_iq = FALSE`.
+The block takes about «QS_MIN» minutes on a laptop (20 grid points, two folds, then the
+final fit with 20,000 Laplace draws); it flags «QS_FLAGS» and localizes the change to
+«QS_DATE».
 
 ```r
 library(bqq)
@@ -78,26 +81,29 @@ w <- 30                                  # warm-up period: the in-control refere
 l <- 30                                  # block length
 H <- getSustainedShift(n, l = l, w = w)  # r = (n - w) / l = 11 sustained-shift blocks
 
-# ---- 3. Cross-validation of the prior hyperparameter ----
+# ---- 3. Grid search by cross-validation: prior hyperparameter x lambda_iq ----
 # Order-preserved 2-fold CV over a grid whose columns are getModel() arguments.
-# lambda_iq2 is not in the grid: the EM learns it inside every CV fit and in the
-# final fit. Rows come back sorted by the validation criterion (loss = "score").
-grid <- expand.grid(lambda_nc = 50, spike_sd = c(0.1, 0.15, 0.25, 0.4))
+# lambda_iq2 = lambda_iq^2 IS a grid column: lambda_iq in {0, 1, 10, 100, 1000}
+# (0 = no fusion), crossed with spike_sd. adaptive_iq = FALSE: no EM in any fit.
+# Rows come back sorted by the validation criterion (loss = "score").
+grid <- expand.grid(lambda_nc = 50, spike_sd = c(0.1, 0.15, 0.25, 0.4),
+                    lambda_iq2 = c(0, 1, 10, 100, 1000)^2)
 cv <- cv_copss_grid(y, taus, H = H, w = w, grid = grid,
-                    base_args = list(prior_gamma = "spike_slab", laplace_n_samples = 2000),
+                    base_args = list(prior_gamma = "spike_slab", adaptive_iq = FALSE),
                     loss = "score", seed = 1)
-cv[, c("lambda_nc", "spike_sd", "val_score", "val_pinball", "lambda_iq2_fit")]
+cv$lambda_iq <- sqrt(cv$lambda_iq2)
+cv[, c("lambda_nc", "spike_sd", "lambda_iq", "val_score", "val_pinball")]
 best <- cv[1, ]                          # the winner
 
-# ---- 4. Final fit at the winner: MAP + Laplace draws, EM for lambda_iq2 ----
+# ---- 4. Final fit at the winning pair: one MAP fit + Laplace draws, no EM ----
 fit <- getModel(y, taus, H = H, w = w,
                 prior_gamma = "spike_slab", spike_sd = best$spike_sd,
                 lambda_nc = best$lambda_nc,
+                lambda_iq2 = best$lambda_iq2, adaptive_iq = FALSE,
                 fit_method = "map", map_hessian = TRUE,
                 laplace_n_samples = 20000, seed = 1)
 fit$map$termination          # optimizer exit status
-fit$iq_em$trace              # one row per EM iteration: lambda_iq, Sbar, lp_cd, gain
-sqrt(fit$iq_em$lambda_iq2)   # the learned interquantile fusion weight
+sqrt(best$lambda_iq2)        # the interquantile fusion weight the CV selected
 
 # ---- 5. Posterior predictive quantiles and change-point detection ----
 eta <- getEta(fit, H = H, seed = 1)      # [draws x quantiles x time]
@@ -140,12 +146,18 @@ Notes on the steps:
   `"het_group_lasso"`) tune `lambda_lasso2_b`, e.g.
   `expand.grid(lambda_nc = 50, lambda_lasso2_b = c(0.01, 0.05, 0.1, 0.5, 1))` with
   `base_args = list(prior_gamma = "lasso")`, and the final fit takes
-  `lambda_lasso2_b = best$lambda_lasso2_b`. Every CV fit runs the same chain as the
-  final fit (optimizer to convergence, one EM update, repeat until the complete-data
-  log posterior stops gaining), so the tuned value belongs to the model that is fitted.
-- **Step 4, the fit.** `fit$iq_em$trace` records each EM iteration; `warm_status`
-  shows whether a warm-started optimizer moved. To pin the fusion weight instead of
-  learning it, pass `adaptive_iq = FALSE, lambda_iq2 = <squared value>`.
+  `lambda_lasso2_b = best$lambda_lasso2_b`. In both cases `lambda_iq2` stays on the grid
+  as `c(0, 1, 10, 100, 1000)^2`, so a LASSO-type prior searches 5 x 5 = 25 points and a
+  spike prior 4 x 5 = 20. Every CV fit is one MAP fit at its row's values
+  (`adaptive_iq = FALSE`), the same estimator as the final fit, so the tuned pair belongs
+  to the model that is fitted. Held-out scores within about one unit of each other are
+  within fold noise.
+- **Step 4, the fit.** The final fit repeats the winning row once with the full draw
+  count. Pass `adaptive_iq = FALSE` explicitly: the package default is still the EM
+  (`adaptive_iq = TRUE`), which is not used in this workflow because its fixed point on a
+  change-point design is total fusion (`lambda_iq` in the tens of thousands), and at that
+  value scale and shape shifts are no longer detectable. The EM remains available for
+  comparison only.
 - **Step 5, detection.** `adjust` is the across-block decision rule of record:
   `"raw"` (the default, used throughout) tests each block at level `alpha`; the
   alternatives are `"calib"`, `"holm"`, `"bonf"` and `"bh"`.
@@ -162,8 +174,9 @@ oxycodone shipments to Alabama pharmacies, 2015-2019, in morphine milligram
 equivalents per state resident, built from the DEA ARCOS records released by The
 Washington Post (see `?arcos_al`). The analysis fits the residuals of a calendar
 adjustment (holiday and day of the week) with a 90-day warm-up period and 30-day
-blocks, here under the adaptive LASSO prior with the package's default local rates
-`lambda^2_{q,j} ~ Gamma(1, 0.05)`.
+blocks, here under the adaptive LASSO prior. The grid search tunes the local-rate
+hyperparameter `lambda_lasso2_b` and `lambda_iq` together by the same 2-fold score
+cross-validation as the Quick Start, 25 grid points, no EM.
 
 ```r
 library(bqq); library(ggplot2)
@@ -174,9 +187,16 @@ taus  <- c(0.025, 0.25, 0.5, 0.75, 0.975)
 w <- 90; l <- 30
 H <- getSustainedShift(length(y), l = l, w = w)          # r = 58 blocks
 
+grid <- expand.grid(lambda_nc = 50, lambda_lasso2_b = c(0.01, 0.05, 0.1, 0.5, 1),
+                    lambda_iq2 = c(0, 1, 10, 100, 1000)^2)
+cv <- cv_copss_grid(y, taus, H = H, w = w, grid = grid,
+                    base_args = list(prior_gamma = "adaptive_lasso", adaptive_iq = FALSE),
+                    loss = "score", seed = 1)
+best <- cv[1, ]                                          # «ARCOS_WINNER»
 fit <- getModel(y, taus, H = H, w = w, prior_gamma = "adaptive_lasso",
+                lambda_lasso2_b = best$lambda_lasso2_b, lambda_nc = best$lambda_nc,
+                lambda_iq2 = best$lambda_iq2, adaptive_iq = FALSE,
                 fit_method = "map", map_hessian = TRUE, laplace_n_samples = 50000, seed = 1)
-fit$iq_em$trace                                          # the EM chain for lambda_iq
 
 det <- detectChangepoints_gamma(fit, taus, l = l, w = w, y = y,
                                 basis = c("quantile", "qss", "lmom"), statistic = "ui",
@@ -195,9 +215,10 @@ plotBQQSummary(fit, det, time = dates, basis = "lmom", eta = eta, H = H,
 
 ![ARCOS, adaptive LASSO prior, l = 30](man/figures/arcos_l30_adaptive_lasso_summary_lmom.png)
 
-The fit takes about an hour on a laptop (58 blocks, five quantiles, 50,000 Laplace
-draws); `plotBQQSummary()` on the full draw set is slow, so thin `fit$laplace_samples`
-to a few thousand draws before plotting.
+The grid search takes about «ARCOS_CV_MIN» minutes on a laptop (50 single fits on 58 blocks)
+and the final fit with 50,000 Laplace draws about «ARCOS_FIT_MIN» minutes; it flags
+«ARCOS_FLAGS» on the L-moment basis. `plotBQQSummary()` on the full draw set is slow,
+so thin `fit$laplace_samples` to a few thousand draws before plotting.
 
 ## Core Functions
 
@@ -333,6 +354,20 @@ probability of any false alarm across all blocks and cells jointly.
   keeps `omega_j ~ InvGamma(1/2, c/2)`. `.bqq_lp17()` matches term by term. The group norm is
   smoothed in the optimizer with the IQ constant (`sqrt(||g||^2 + iq_smooth^2)`). Results
   change for these four priors relative to 0.6.7; spike-and-slab priors are unaffected.
+
+### Documented workflow since 2026-09-09: grid search for `lambda_iq`, no EM
+
+- The Quick Start and the ARCOS illustration tune `lambda_iq` by the same 2-fold score
+  cross-validation as the prior hyperparameter, on `lambda_iq2 = c(0, 1, 10, 100, 1000)^2`
+  crossed with the shrinkage grid, and fit everything with `adaptive_iq = FALSE`.
+- Reason: on a change-point design most adjacent-quantile differences are truly zero, so
+  the empirical-Bayes fixed point of the Appendix C EM is `lambda_iq -> infinity`. The
+  chain of 0.6.6-0.6.10 reaches it (about 10^4 on n = 365 series), which fuses the five
+  quantile shifts into one and removes all power against scale, skewness and kurtosis
+  shifts (ar_ext5 interim read, 2026-09-09). The held-out score itself prefers
+  `lambda_iq` between 10 and 100 on the same series.
+- The EM code (`adaptive_iq = TRUE`, `iq_em_*`) is unchanged and still the package
+  default; the entries below describe it and are kept as history.
 
 ### 0.6.7
 
