@@ -61,9 +61,9 @@ The proposed method end to end: a grid search by cross-validation over the prior
 hyperparameter and the interquantile fusion weight `lambda_iq`, the final MAP fit at the
 winning pair, change-point detection on the three bases, and the figures. No EM is
 run anywhere: every CV fit and the final fit is a single MAP fit with `adaptive_iq = FALSE`.
-The block takes about «QS_MIN» minutes on a laptop (20 grid points, two folds, then the
-final fit with 20,000 Laplace draws); it flags «QS_FLAGS» and localizes the change to
-«QS_DATE».
+The block takes about 7 minutes on a laptop (20 grid points, two folds, then the
+final fit with 20,000 Laplace draws); it flags blocks 8 and 9 on the L-moment basis (7, 8 and 9 on the QSS basis), the blocks that contain the planted shift and localizes the change to
+2024-08-31 in block 8, with the winner at `spike_sd = 0.4`, `lambda_iq = 10`.
 
 ```r
 library(bqq)
@@ -127,9 +127,10 @@ p3 <- plotQSSProcess(fit, eta = eta, H = H, time = dates, detection = det,
                      date_breaks = ax$date_breaks, date_labels = ax$date_labels)
 p4 <- plotGammaHeatmap(fit, detection = det,
                        block_labels = format(dates[det$detected_blocks$obs_start]))
-# The talk's three-panel figure. A comparator's change points color the circles:
-# proposed, comparator, or both when within one block length of each other.
-cp <- changepoint::cpts(changepoint::cpt.meanvar(y, method = "BinSeg", Q = 12,
+# The three-panel figure. A comparator's change points color the circles: proposed,
+# comparator, or both when within one block length of each other. BinSeg's settings are
+# aligned to BQQ's: Q = r (11 blocks), minseglen = l (30), asymptotic penalty at 0.05.
+cp <- changepoint::cpts(changepoint::cpt.meanvar(y, method = "BinSeg", Q = 11, minseglen = 30,
                                                  penalty = "Asymptotic", pen.value = 0.05))
 p5 <- plotBQQSummary(fit, det, time = dates, basis = "lmom", eta = eta, H = H,
                      comparator = cp, comparator_label = "BinSeg", ylab = "y",
@@ -192,7 +193,7 @@ grid <- expand.grid(lambda_nc = 50, lambda_lasso2_b = c(0.01, 0.05, 0.1, 0.5, 1)
 cv <- cv_copss_grid(y, taus, H = H, w = w, grid = grid,
                     base_args = list(prior_gamma = "adaptive_lasso", adaptive_iq = FALSE),
                     loss = "score", seed = 1)
-best <- cv[1, ]                                          # «ARCOS_WINNER»
+best <- cv[1, ]                                          # lambda_lasso2_b = 0.05, lambda_iq = 100
 fit <- getModel(y, taus, H = H, w = w, prior_gamma = "adaptive_lasso",
                 lambda_lasso2_b = best$lambda_lasso2_b, lambda_nc = best$lambda_nc,
                 lambda_iq2 = best$lambda_iq2, adaptive_iq = FALSE,
@@ -205,8 +206,10 @@ det <- detectChangepoints_gamma(fit, taus, l = l, w = w, y = y,
 det$tests$lmom$ui$raw                                  # flagged blocks, L-moment basis
 dates[det$detected_blocks$signal_obs[det$tests$lmom$ui$raw]]
 
-# Binary segmentation (changepoint package) as the comparator of the talk
-cp <- changepoint::cpts(changepoint::cpt.meanvar(y, method = "BinSeg", Q = 60,
+# Binary segmentation (changepoint package) as the comparator, with its settings aligned
+# to BQQ's: Q = r (58 candidate blocks), minseglen = l (30 days), asymptotic penalty at
+# the same 0.05; the full series is searched.
+cp <- changepoint::cpts(changepoint::cpt.meanvar(y, method = "BinSeg", Q = 58, minseglen = 30,
                                                  penalty = "Asymptotic", pen.value = 0.05))
 eta <- getEta(fit, H = H, seed = 1)
 plotBQQSummary(fit, det, time = dates, basis = "lmom", eta = eta, H = H,
@@ -215,9 +218,9 @@ plotBQQSummary(fit, det, time = dates, basis = "lmom", eta = eta, H = H,
 
 ![ARCOS, adaptive LASSO prior, l = 30](man/figures/arcos_l30_adaptive_lasso_summary_lmom.png)
 
-The grid search takes about «ARCOS_CV_MIN» minutes on a laptop (50 single fits on 58 blocks)
-and the final fit with 50,000 Laplace draws about «ARCOS_FIT_MIN» minutes; it flags
-«ARCOS_FLAGS» on the L-moment basis. `plotBQQSummary()` on the full draw set is slow,
+The grid search takes about 90 minutes on a laptop (50 single fits on 58 blocks)
+and the final fit with 50,000 Laplace draws about 5 minutes; it flags
+41 of the 58 blocks, blocks 11 to 53 apart from 51, that is from early 2016 to the end of 2019, at the winner `lambda_lasso2_b = 0.05`, `lambda_iq = 100` on the L-moment basis. `plotBQQSummary()` on the full draw set is slow,
 so thin `fit$laplace_samples` to a few thousand draws before plotting.
 
 ## Core Functions

@@ -449,8 +449,9 @@ plotLmomProcess <- function(fit, eta = NULL, H = NULL, X = NULL, time = NULL,
 #'   rotated.
 #' @param label_every Show every \code{label_every}-th block label on the x axis.
 #'   Default \code{NULL}: all labels up to 12 blocks, about eight labels beyond.
-#' @param note_clipping Logical; append to the subtitle how many cells exceed the
-#'   fixed fill limit (default \code{TRUE}).
+#' @param note_clipping Logical; if \code{TRUE}, append to the panel label how many cells
+#'   exceed \code{z_limit} and the largest |z| (default \code{FALSE}: the panel label is the
+#'   basis name only, e.g. "Quantile Shift Coefficient"; author's rule, 2026-09-10).
 #' @param title Optional plot title.
 #' @param mark_cells Logical; when \code{TRUE} (default) the cells responsible for a
 #'   OOC block are given a second, darker border. A block that the block-level
@@ -474,7 +475,8 @@ plotLmomProcess <- function(fit, eta = NULL, H = NULL, X = NULL, time = NULL,
 #'   \eqn{\tilde z} cells, or the studentized \code{z} fallback (default 3). A FIXED
 #'   scale is the point: with a data-driven limit the same color means a different
 #'   number in every figure, so two fits cannot be compared by eye. Cells beyond the
-#'   limit are clipped to the end color (not dropped), and the subtitle records that
+#'   limit are clipped to the end color (not dropped); the legend therefore labels its
+#'   ends \code{"<= -z_limit"} and \code{">= z_limit"}, and the subtitle records that
 #'   clipping occurred and how far out the extreme cell was. Set \code{NULL} to
 #'   restore the old data-driven symmetric limit. Ignored when the fill is the raw
 #'   posterior-mean \eqn{\gamma}, where a fixed \eqn{\pm 3} would be meaningless --
@@ -492,7 +494,7 @@ plotGammaHeatmap <- function(fit, detection = NULL, block_labels = NULL,
                              pos_color = NULL, neg_color = NULL,
                              z_limit = 3,
                              xlab = "block", ylab = NULL,
-                             basis = NULL, label_every = NULL, note_clipping = TRUE) {
+                             basis = NULL, label_every = NULL, note_clipping = FALSE) {
   .bqq_need_ggplot2()
   pal <- .bqq_pal
   taus <- if (!is.null(detection) && !is.null(detection$taus)) detection$taus
@@ -555,7 +557,6 @@ plotGammaHeatmap <- function(fit, detection = NULL, block_labels = NULL,
       if (use_t2) detection$significant_wald_calib else detection$significant_calib
     }
   }
-  outline_lab <- paste0(": ", if (use_t2) "T2" else "UI", "/", adjust)
 
   ## ---- within-block localization (manuscript Sec 3.2): a OOC block is
   ## bordered in block_color; inside it, a cell is bordered in cell_color when
@@ -620,8 +621,16 @@ plotGammaHeatmap <- function(fit, detection = NULL, block_labels = NULL,
                          color = cell_color, linewidth = 1.0) +
       ggplot2::scale_x_discrete(breaks = x_breaks)
     if (diverging) {
+      # Legend for a FIXED scale: the end colors stand for "lim or more" / "-lim or less",
+      # because everything beyond the limit is clipped to them (author, 2026-09-10).
+      fixed <- !is.null(fixed_lim) && is.finite(fixed_lim) && fixed_lim > 0
+      brks <- pretty(c(-lim, lim)); brks <- brks[brks > -lim & brks < lim]
+      brks <- c(-lim, brks, lim)
+      labs <- format(brks, trim = TRUE)
+      if (fixed) { labs[1] <- paste0("\u2264 ", format(-lim)); labs[length(labs)] <- paste0("\u2265 ", format(lim)) }
       g <- g + ggplot2::scale_fill_gradient2(low = neg_color, mid = "white", high = pos_color,
-                                             midpoint = 0, limits = c(-lim, lim))
+                                             midpoint = 0, limits = c(-lim, lim),
+                                             breaks = brks, labels = labs)
     } else {
       g <- g + ggplot2::scale_fill_gradient(low = "white", high = pal$crimson)
     }
@@ -652,7 +661,7 @@ plotGammaHeatmap <- function(fit, detection = NULL, block_labels = NULL,
       note <- "  (posterior mean)"
       zscale <- FALSE                 # raw coefficients: +/-3 would be meaningless
     }
-    sub <- paste0(sub, if (!is.null(detection)) outline_lab else "", note)
+    # Panel label: the basis name only (author, 2026-09-10) -- no rule suffix, no note.
     sc <- get_sig("quantile")
     panels$quantile <- heat(vals, rl, sc, get_sig_cells("quantile", sc, nrow(vals)),
                             flab, sub, diverging = TRUE,
@@ -670,7 +679,6 @@ plotGammaHeatmap <- function(fit, detection = NULL, block_labels = NULL,
       note <- "  (studentized; whitened cells unavailable)"
     }
     rl <- rownames(vals); if (is.null(rl)) rl <- c("LS", "ScS", "SkS", "KS")
-    sub <- paste0(sub, outline_lab, note)
     sc <- get_sig("qss")
     panels$qss <- heat(vals, rl, sc, get_sig_cells("qss", sc, nrow(vals)),
                        flab, sub, diverging = TRUE, fixed_lim = z_limit)
@@ -688,7 +696,7 @@ plotGammaHeatmap <- function(fit, detection = NULL, block_labels = NULL,
     rl <- rownames(vals); if (is.null(rl)) rl <- default_rows
     sc <- get_sig(fam)
     panels[[fam]] <<- heat(vals, rl, sc, get_sig_cells(fam, sc, nrow(vals)),
-                           flab, paste0(label, outline_lab, note),
+                           flab, label,
                            diverging = TRUE, fixed_lim = z_limit)
   }
   shape_panel("lmom", detection$z_white_lmom, detection$z_lmom,

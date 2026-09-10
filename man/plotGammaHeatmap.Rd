@@ -19,7 +19,7 @@ plotGammaHeatmap(
   ylab = NULL,
   basis = NULL,
   label_every = NULL,
-  note_clipping = TRUE
+  note_clipping = FALSE
 )
 }
 \arguments{
@@ -61,7 +61,8 @@ no canonical hex for those, so pass your own values to match a house palette.}
 \eqn{\tilde z} cells, or the studentized \code{z} fallback (default 3). A FIXED
 scale is the point: with a data-driven limit the same color means a different
 number in every figure, so two fits cannot be compared by eye. Cells beyond the
-limit are clipped to the end color (not dropped), and the subtitle records that
+limit are clipped to the end color (not dropped); the legend therefore labels its
+ends \code{"<= -z_limit"} and \code{">= z_limit"}, and the subtitle records that
 clipping occurred and how far out the extreme cell was. Set \code{NULL} to
 restore the old data-driven symmetric limit. Ignored when the fill is the raw
 posterior-mean \eqn{\gamma}, where a fixed \eqn{\pm 3} would be meaningless --
@@ -81,8 +82,9 @@ Default \code{NULL}: every family the detection object carries.}
 \item{label_every}{Show every \code{label_every}-th block label on the x axis.
 Default \code{NULL}: all labels up to 12 blocks, about eight labels beyond.}
 
-\item{note_clipping}{Logical; append to the subtitle how many cells exceed the
-fixed fill limit (default \code{TRUE}).}
+\item{note_clipping}{Logical; if \code{TRUE}, append to the panel label how many cells
+exceed \code{z_limit} and the largest |z| (default \code{FALSE}: the panel label is the
+basis name only, e.g. "Quantile Shift Coefficient"; author's rule, 2026-09-10).}
 }
 \value{
 A ggplot object when one family is shown; a \pkg{patchwork} of two panels
