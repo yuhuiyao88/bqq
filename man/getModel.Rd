@@ -20,7 +20,7 @@ getModel(
   beta_sd = 1,
   lambda_nc = 2,
   lambda_iq2 = NULL,
-  adaptive_iq = TRUE,
+  adaptive_iq = FALSE,
   iq_em_max_iter = 60,
   iq_em_step = c("fixedpoint", "recursion"),
   adaptive_beta = TRUE,
@@ -133,31 +133,23 @@ prior on the warm-up period with discount \code{a0 = 1/w} (Ibrahim and Chen
 \item{lambda_nc}{Positive scalar weight for the non-crossing penalty (larger is stricter).}
 
 \item{lambda_iq2}{\code{NULL} (default) or a non-negative scalar, the \strong{squared}
-interquantile (IQ) shrinkage weight \eqn{\lambda_{iq}^2}. \code{NULL} with
-\code{adaptive_iq = TRUE} starts the EM at the pilot-scale value
-\eqn{\lambda_{iq} = r(m-1)}, the fixed point of the M-step evaluated at the pilot
-fit (the Park and Casella 2008 starting rule); \code{NULL} without the EM means 1. The penalty applied to the target is
-\eqn{\sqrt{\lambda_{iq}^2}\sum_q |\gamma_q - \gamma_{q-1}|}, i.e. the effective
-L1 fusion rate is the \emph{square root} of this argument. This matches the
-\code{lambda_lasso2} / \code{lambda_beta2} convention, where the stored quantity
-is \eqn{\lambda^2} and the Laplace rate is \eqn{\lambda}. Larger = stronger
-fusion; 0 = none. When \code{adaptive_iq = FALSE} this is the fixed value used;
-when \code{adaptive_iq = TRUE} it is the \emph{starting value} of the EM
-recursion and must be strictly positive (default 1).}
+interquantile (IQ) shrinkage weight \eqn{\lambda_{iq}^2}. The penalty applied to the
+target is \eqn{\sqrt{\lambda_{iq}^2}\sum_q |\gamma_q - \gamma_{q-1}|}, i.e. the
+effective L1 fusion rate is the \emph{square root} of this argument, matching the
+\code{lambda_lasso2} / \code{lambda_beta2} convention. Larger = stronger fusion;
+0 = none. \code{NULL} means 1. The value is chosen by cross-validation on a grid
+(see \code{\link{cv_copss_grid}}); the README workflow uses
+\code{c(0, 1, 10, 100, 1000)^2}. When \code{adaptive_iq = TRUE} it is instead the
+starting value of the EM and must be strictly positive.}
 
-\item{adaptive_iq}{Logical; if TRUE (default), \eqn{\lambda_{iq}^2} is learned from
-  the data by an EM recursion run \emph{between} refits, in the same spirit as
-  \code{adaptive_gamma} / \code{adaptive_beta} learn \eqn{\lambda^2} for the
-  coefficients. If FALSE, the supplied \code{lambda_iq2} is used as a fixed value
-  and the model is fitted once.
-
-  Note that \eqn{\lambda_{iq}^2} cannot be learned \emph{inside} the fit the way
-  the coefficient-side rates are: the fused factor enters the target as a bare
-  penalty without its \eqn{N\log\lambda} normalizer, so its joint-MAP mode is
-  degenerate and collapses to 0 under \code{fit_method = "map"}. The EM route
-  restores the normalizer by working with the marginal likelihood, so it does not
-  suffer that collapse. Each EM iteration is a \strong{full refit}, so
-  \code{adaptive_iq = TRUE} costs up to \code{iq_em_max_iter} times a single fit.}
+\item{adaptive_iq}{Logical; default \code{FALSE} (since 0.6.11): \code{lambda_iq2} is
+used as a fixed value and the model is fitted once. If \code{TRUE},
+\eqn{\lambda_{iq}^2} is learned by the EM of Appendix C, run between refits.
+The EM is no longer the documented workflow: on a change-point design its fixed
+point is total fusion (\eqn{\lambda_{iq}} of order \eqn{10^4}), at which scale and
+shape shifts are not detectable; the grid search on the held-out score selects
+moderate values instead. Each EM iteration is a full refit, so
+\code{adaptive_iq = TRUE} costs up to \code{iq_em_max_iter} times a single fit.}
 
 \item{iq_em_max_iter}{Maximum number of EM iterations (refits) when
 \code{adaptive_iq = TRUE} (default 60). Each iteration recomputes \eqn{\bar S}

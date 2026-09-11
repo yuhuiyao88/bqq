@@ -180,11 +180,10 @@ cv_copss_grid <- function(y, taus, H, X = NULL, w, grid,
     full_args["fit_method"] <- list("map")
     full_args["seed"] <- list(seed)
     full_args["verbose"] <- list(FALSE)
-    # Since 0.6.3 the tuning fits use the SAME estimation procedure as the final fit:
-    # adaptive_iq follows getModel()'s default (TRUE), so lambda_iq2 is learned by the
-    # EM inside every fold. Before 0.6.3 this function forced adaptive_iq = FALSE and
-    # map_hessian = FALSE for speed, which tuned the other hyperparameters at a fixed
-    # lambda_iq2 that the final fit then did not use.
+    # The tuning fits use the SAME estimation procedure as the final fit: adaptive_iq
+    # follows getModel()'s default (FALSE since 0.6.11), so lambda_iq2 is a grid column
+    # and each tuning fit is one MAP fit at its row's values. Passing adaptive_iq = TRUE
+    # in base_args runs the EM inside every fold instead.
     full_args["laplace_n_samples"] <- list(2000L)   # E-step draws for tuning; base_args may override
     # The tuning fits call getModel with getModel's own defaults for everything not in
     # base_args or the grid: the same chain, to the same stopping rule, as the final fit.

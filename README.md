@@ -154,11 +154,10 @@ Notes on the steps:
   to the model that is fitted. Held-out scores within about one unit of each other are
   within fold noise.
 - **Step 4, the fit.** The final fit repeats the winning row once with the full draw
-  count. Pass `adaptive_iq = FALSE` explicitly: the package default is still the EM
-  (`adaptive_iq = TRUE`), which is not used in this workflow because its fixed point on a
-  change-point design is total fusion (`lambda_iq` in the tens of thousands), and at that
-  value scale and shape shifts are no longer detectable. The EM remains available for
-  comparison only.
+  count. `adaptive_iq = FALSE` is the package default since 0.6.11; the EM of Appendix C
+  (`adaptive_iq = TRUE`) remains available but is not used in this workflow, because its
+  fixed point on a change-point design is total fusion (`lambda_iq` in the tens of
+  thousands), at which scale and shape shifts are no longer detectable.
 - **Step 5, detection.** `adjust` is the across-block decision rule of record:
   `"raw"` (the default, used throughout) tests each block at level `alpha`; the
   alternatives are `"calib"`, `"holm"`, `"bonf"` and `"bh"`.
@@ -315,6 +314,13 @@ the full across-block family — raw, Holm, Bonferroni, BH, and the **calibrated
 single-step rule using analytic charting constants (Šidák-type) that control the
 probability of any false alarm across all blocks and cells jointly.
 
+### 0.6.11
+
+- **`adaptive_iq = FALSE` is the default of `getModel()`.** `lambda_iq2` is a fixed value
+  chosen on the CV grid; a single MAP fit per call. `adaptive_iq = TRUE` still runs the EM.
+  `cv_copss_grid()` inherits the default, so tuning fits are single fits unless
+  `base_args` says otherwise. No other change.
+
 ### 0.6.10
 
 - **Plots follow the JSM 2026 ARCOS figures** (`Box/2026Summer/JSM/talk_figures_lmom.R`).
@@ -369,8 +375,8 @@ probability of any false alarm across all blocks and cells jointly.
   quantile shifts into one and removes all power against scale, skewness and kurtosis
   shifts (ar_ext5 interim read, 2026-09-09). The held-out score itself prefers
   `lambda_iq` between 10 and 100 on the same series.
-- The EM code (`adaptive_iq = TRUE`, `iq_em_*`) is unchanged and still the package
-  default; the entries below describe it and are kept as history.
+- The EM code (`adaptive_iq = TRUE`, `iq_em_*`) is unchanged but no longer the default
+  (0.6.11); the entries below describe it and are kept as history.
 
 ### 0.6.7
 
